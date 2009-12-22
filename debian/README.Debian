@@ -1,0 +1,14 @@
+sqlgrey for Debian
+------------------
+
+To use Postgrey, put something along the lines of
+
+    smtpd_recipient_restrictions =
+        permit_mynetworks,
+        reject_unauth_destination,
+        check_policy_service inet:127.0.0.1:2501
+
+in your /etc/postfix/main.cf (Postfix 2.1 or newer is required.)
+
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Wed, 19 Mar 2008 21:18:15 +0100

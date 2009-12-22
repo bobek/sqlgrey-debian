@@ -1,0 +1,31 @@
+This package was debianized by Antonin Kral <A.Kral@sh.cvut.cz> on
+Wed, 19 Mar 2008 21:18:15 +0100.
+
+It was downloaded from http://sqlgrey.sourceforge.net/
+
+Upstream Author: 
+
+    Lionel Bouton <lionel-dev@bouton.name>
+
+Copyright: 2004 - 2010 Lionel Bouton
+
+License:
+
+     This program is free software; you can redistribute it and/or modify
+     it under the terms of the GNU General Public License as published by
+     the Free Software Foundation; either version 2 of the License.
+   
+     This program is distributed in the hope that it will be useful,
+     but WITHOUT ANY WARRANTY; without even the implied warranty of
+     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+     GNU General Public License for more details.
+   
+     You should have received a copy of the GNU General Public License with
+     the Debian GNU/Linux distribution in file
+     /usr/share/common-licenses/GPL-2; if not, write to the Free Software
+     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301,
+     USA.
+   
+The Debian packaging is (C) 2008, Antonin Kral <A.Kral@sh.cvut.cz> and
+is licensed under the GPL-2, see `/usr/share/common-licenses/GPL-2'.
+

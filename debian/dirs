@@ -1,0 +1,5 @@
+usr/bin
+usr/sbin
+var/lib/sqlgrey
+etc/sqlgrey
+etc/init.d
