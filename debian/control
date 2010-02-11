@@ -3,12 +3,12 @@ Section: mail
 Priority: optional
 Maintainer: Antonin Kral <A.Kral@sh.cvut.cz>
 Build-Depends: debhelper (>= 5), perl-doc
-Standards-Version: 3.8.3
+Standards-Version: 3.8.4
 
 Package: sqlgrey
 Homepage: http://sqlgrey.sourceforge.net/
 Architecture: all
-Depends: ${perl:Depends}, adduser, perl, libnet-server-perl, libdate-calc-perl, libdbd-pg-perl | libdbd-mysql-perl | libdbd-sqlite3-perl
+Depends: ${perl:Depends}, ${misc:Depends}, adduser, perl, libnet-server-perl, libdate-calc-perl, libdbd-pg-perl | libdbd-mysql-perl | libdbd-sqlite3-perl
 Recommends: postfix, libdbd-pg-perl
 Description: Postfix Greylisting Policy Server
  A policy server for Postfix implementing greylisting.

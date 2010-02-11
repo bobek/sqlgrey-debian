@@ -9,8 +9,8 @@
 #
 ### BEGIN INIT INFO
 # Provides:          sqlgrey
-# Required-Start:    $syslog, $local_fs
-# Required-Stop:     $syslog, $local_fs
+# Required-Start:    $syslog, $local_fs, $remote_fs
+# Required-Stop:     $syslog, $local_fs, $remote_fs
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
 # Short-Description: Start/stop the sqlgrey daemon

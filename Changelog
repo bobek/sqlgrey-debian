@@ -1,37 +1,57 @@
+* Mon Feb 01 2010 Michal Ludvig <mludvig@logix.net.nz>
+ - Upgraded VERSION to 1.8.0-rc2
+ - Reverted GNU sed syntax in Makefile
+* Sat Jan 23 2010 Michal Ludvig <mludvig@logix.net.nz>
+ - Upgraded VERSION to 1.8.0-rc1
+ - 'make dist' now creates sqlgrey-$VERSION.tar.gz with
+   the help of 'git archive'
+* Mon Aug 17 2009 Michal Ludvig <mludvig@logix.net.nz>
+ - 1.7.7 release getting ready
+ - Reworked "smart"/"class-c" IPv6 address handling.
+ - Added IPv6 address support for clients_ip_whitelist(.local) file
+ - client_ip_whitelist(.local) now supports address/prefix
+   notation both for IPv4 and IPv6 addresses.
+
 * Sun Aug 05 2007 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.8 release
- - Crash on syslog death bugfix
+ - 1.7.6 release
  - Database handling fix (deactivated InactiveDestroy unless needed)
  - Reopen database connection on SIGUSR1
 
-* Mon Oct 24 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.7 release
- - bugfix for superfluous log errors
+* Thu Feb 15 2007 Dan Faerch <dan.sqlgrey @hacker.dk>
+ - 1.7.5 release
+ - Changed db_cleanup. clean time stored in db for better handling,
+   especially in  clustered environments
+ - Fix for harmless warnings about "possible typo"
+ - Fix for sqlgrey dying if syslog is offline
+ - Filled feature req from Riaan Kok. Support "postfix attributes on both
+   sides".. Ie:  "client_name !~ helo_name"
 
-* Wed Sep 14 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.6 release
- - bugfix for a multiple instance race condition (thanks to Steffen Plotner)
+* Sun Aug 03 2006 Dan Faerch <dan-NOSPAM@hacker.dk>
+ - 1.7.4 release
+ - Added feature Discrimination
+ - Added feature DBCluster
+ - Added config option reject_code (eg. answer 451 instead of 450)
 
-* Tue Jul 26 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.5 release
- - clean_method support bugfix
+* Wed Nov 16 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.3 release
+ - fixes for a crash with '*' in email adresses
 
-* Thu Jul 07 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.3 release
- - the database cleanup method is configurable, the default is now
-   safe on all configurations
+* Tue Oct 25 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.2 release
+ - fixes for several errors in logging
+ - clean_method ported from 1.6.x
 
-* Fri Jul 04 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.2 release
- - DB handles aren't destroyed by the DBD driver anymore,
- - spec file updated to conform to RPM 4,
- - logstat bugfix,
- - protect Syslog calls from "%?" strings
+* Thu Sep 15 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.1 release
+ - fix for a race condition in multiple instances configurations
+ - fix for weekly stats
 
-* Fri Jun 24 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.1 release
- - sqlgrey-logstats.pl fixes (support for more hostnames in logs,
-   better from awl matches report)
+* Tue Jun 21 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.0 release
+ - now continue if the DB isn't available at startup time
+ - based on 1.6.0 with Michel Bouissou's work:
+  . better connect cleanup when creating AWL entries
+  . source IP throttling
  
 * Thu Jun 16 2005 Lionel Bouton <lionel-dev@bouton.name>
  - 1.6.0 release

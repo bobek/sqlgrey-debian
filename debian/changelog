@@ -1,3 +1,9 @@
+sqlgrey (1.8.0rc2-1) unstable; urgency=low
+
+  * New upstream release
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Thu, 11 Feb 2010 09:29:57 +0100
+
 sqlgrey (1.6.8-4) unstable; urgency=low
 
   * Added /var/lib/sqlgrey to dirs (Closes: #532950, #532948) 

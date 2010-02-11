@@ -1,5 +1,5 @@
 %define name sqlgrey
-%define ver  1.6.8
+%define ver  1.8.0-rc2
 %define rel  1
 
 Summary:   SQLgrey is a postfix grey-listing policy service.
@@ -45,6 +45,7 @@ make clean
 %config(noreplace) /etc/sqlgrey/sqlgrey.conf
 /etc/sqlgrey/clients_ip_whitelist
 /etc/sqlgrey/clients_fqdn_whitelist
+/etc/sqlgrey/discrimination.regexp
 /etc/sqlgrey/dyn_fqdn.regexp
 /etc/sqlgrey/smtp_server.regexp
 /etc/sqlgrey/README
@@ -52,7 +53,7 @@ make clean
 %pre
 getent group sqlgrey > /dev/null || /usr/sbin/groupadd sqlgrey
 getent passwd sqlgrey > /dev/null || /usr/sbin/useradd -g sqlgrey \
-     -d /var/sqlgrey -s /bin/true sqlgrey
+     -d /var/sqlgrey -s /bin/true sqlgrey 
 
 %postun
 if [ $1 = 0 ]; then
@@ -65,39 +66,35 @@ if [ $1 = 0 ]; then
 fi
 
 %changelog
+* Mon Aug 17 2009 Michal Ludvig <mludvig@logix.net.nz>
+ - 1.7.7 release getting ready
+ - Reworked "smart" IPv6 address handling.
+ - Added IPv6 address support for clients_ip_whitelist(.local) file
+
 * Sun Aug 05 2007 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.8 release
- - bugfix for syslog death crashing SQLgrey
- - fix for unneeded InactiveDestroy (could help memory leaks)
+ - 1.7.6 release
+ - numerous bugfixes, update to last current release version
 
-* Mon Oct 24 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.7 release
- - bugfix for superfluous log messages
+* Wed Nov 16 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.3 release
+ - fixes for a crash with '*' in email adresses
 
-* Wed Sep 14 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.6 release
- - bugfix for a multiple instance race condition (thanks to Steffen Plotner)
+* Tue Oct 25 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.2 release
+ - fixes for several errors in logging
+ - clean_method ported from 1.6.x
 
-* Tue Jul 26 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.5 release
- - clean_method support bugfix
+* Thu Sep 15 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.1 release
+ - fix for race condition in multiple instances configurations
+ - fix for weekly stats
 
-* Thu Jul 07 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.3 release
- - the database cleanup method is configurable, the default is now
-   safe on all configurations
-     
-* Fri Jul 04 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.2 release
- - DB handles aren't destroyed by the DBD driver anymore,
- - spec file updated to conform to RPM 4,
- - logstat bugfix,
- - protect Syslog calls from "%?" strings
-
-* Fri Jun 24 2005 Lionel Bouton <lionel-dev@bouton.name>
- - 1.6.1 release
- - sqlgrey-logstats.pl fixes (support for more hostnames in logs,
-   better from awl matches report)
+* Tue Jun 21 2005 Lionel Bouton <lionel-dev@bouton.name>
+ - 1.7.0 release
+ - now continue if the DB isn't available at startup time
+ - based on 1.6.0 with Michel Bouissou's work:
+  . better connect cleanup when creating AWL entries
+  . source IP throttling
 
 * Thu Jun 16 2005 Lionel Bouton <lionel-dev@bouton.name>
  - 1.6.0 release
