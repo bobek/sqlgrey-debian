@@ -1,6 +1,6 @@
 # Copyright 1999-2005 Gentoo Foundation# Distributed under the terms of the GNU General Public License v2
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /cvsroot/sqlgrey/sqlgrey/sqlgrey.ebuild,v 1.3.2.1 2006/11/15 22:19:18 gyver Exp $
+# $Header$
 
 inherit eutils
 

@@ -3,7 +3,9 @@
 # sqlgrey: a postfix greylisting policy server using an SQL backend
 # based on postgrey
 # Copyright 2004 (c) ETH Zurich
-# Copyright 2004 (c) Lionel Bouton
+# Copyright 2004-2007 (c) Lionel Bouton
+# Parts copyrighted 2005-2007 Dan Faerch
+# Parts copyrighted 2009 Michal Ludvig
 
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -29,12 +31,14 @@ use Pod::Usage;
 use Getopt::Long 2.25 qw(:config posix_default no_ignore_case);
 use Net::Server::Multiplex;
 use DBI;
+use Math::BigInt;
+
 use POSIX ':sys_wait_h';
 
 use vars qw(@ISA);
 @ISA = qw(Net::Server::Multiplex);
 
-my $VERSION = "1.6.8";
+my $VERSION = "1.8.0-rc2";
 my $software = 'SQLgrey-' . $VERSION;
 
 my $DB_VERSION = 3;
@@ -63,19 +67,27 @@ $dflt{awl_age}            = 60;           # 60 days
 $dflt{group_domain_level} = 2;            # 2 e-mail addr from same domain/IP
 $dflt{reject_first_attempt} = 'delay';    # Use 'delay' or 'immed'
 $dflt{reject_early_reconnect} = undef;    # Leave undef
+$dflt{connect_src_throttle} = 0;          # 0 = Don't throttle
 $dflt{db_type}            = 'Pg';
 $dflt{db_name}            = 'sqlgrey';
 $dflt{db_host}            = 'localhost';
 $dflt{db_port}            = 'default';
 $dflt{db_user}            = 'sqlgrey';
 $dflt{db_pass}            = '';
+$dflt{db_prepare_cache}   = 0;
+$dflt{db_cluster}	  = 'off';
 $dflt{prepend}            = 1;
 $dflt{greymethod}         = 'smart';
 $dflt{optmethod}          = 'none'; # or 'optin' or 'optout'
 $dflt{db_cleandelay}	  = 30 * 60;
 $dflt{clean_method}       = 'sync';
-$dflt{admin_mail}         = '';
+$dflt{admin_mail}         = 'postmaster';
 $dflt{log_ident}          = undef;
+$dflt{reject_code}	  = '450';
+
+$dflt{discrimination} 	  = 0;
+$dflt{discrimination_add_rulenr} = 0;
+
 $dflt{log} = { # note values here are not used
 	      'grey' => 2,
 	      'whitelist' => 2,
@@ -99,8 +111,9 @@ my $dyn_ip_whitelist_file    = $dflt{conf_dir} . '/clients_ip_whitelist.local';
 my $stat_fqdn_whitelist_file = $dflt{conf_dir} . '/clients_fqdn_whitelist';
 my $dyn_fqdn_whitelist_file  = $dflt{conf_dir} . '/clients_fqdn_whitelist.local';
 # regexp files
-my $smtp_server_regexp_file  = $dflt{conf_dir} . '/smtp_server.regexp';
-my $dyn_fqdn_regexp_file     = $dflt{conf_dir} . '/dyn_fqdn.regexp';
+my $smtp_server_regexp_file     = $dflt{conf_dir} . '/smtp_server.regexp';
+my $dyn_fqdn_regexp_file        = $dflt{conf_dir} . '/dyn_fqdn.regexp';
+my $discrimination_regexp_file  = $dflt{conf_dir} . '/discrimination.regexp';
 
 my $prepend = 'PREPEND X-Greylist: ';
 
@@ -109,13 +122,12 @@ my $reload = 0; # non-zero signals a regexps/whitelists reload request
 my $ref_to_sqlgrey; # we need this global var to access sqlgrey functions
                     # in signal handlers
 
-sub mylog {
-    my $self = shift;
-    my $logtype = shift;
-    my $loglevel = shift;
-    my $message = shift;
+sub mylog($$$$) {
+    my ($self, $logtype, $loglevel, $message) = @_;
+
     $message =~ s/%/%%/g; # protect sprintf used by Syslog
     if (!defined $self->{sqlgrey}{log}{$logtype}) {
+	# Protect against syslog going down
 	eval { $self->log($loglevel, "Unknown logtype ($logtype): $message"); };
     }
     if ($loglevel <= $self->{sqlgrey}{log}{$logtype}) {
@@ -123,26 +135,26 @@ sub mylog {
 	# logs if we use log_level 4 so log_level is capped by default
 	$loglevel = $loglevel > $self->{server}{log_level} ?
 	    $self->{server}{log_level} : $loglevel;
-	eval { $self->log($loglevel, "$logtype: $message"); };
+	eval { $self->log($loglevel, "$logtype: $message"); }
     }
 }
 
 # Send mails
-sub sendmail {
+sub sendmail($$$) {
     my $self = shift;
     my $subject = shift;
     my $content = shift;
     my $now = time;
 
+    return if $self->{sqlgrey}{admin_mail} eq '';
     # this code throttles the message rate
     # fill bucket
     $self->{sqlgrey}{mail_bucket} += ($now - $self->{sqlgrey}{last_mail})/
 	(60*$self->{sqlgrey}{mail_period});
     $self->{sqlgrey}{last_mail} = $now;
     # but no more than its capacity
-    $self->{sqlgrey}{mail_bucket} =
-	$self->{sqlgrey}{mail_bucket} < $self->{sqlgrey}{mail_maxbucket} ?
-	    $self->{sqlgrey}{mail_bucket} : $self->{sqlgrey}{mail_maxbucket};
+    $self->{sqlgrey}{mail_bucket} = $self->{sqlgrey}{mail_bucket} < $self->{sqlgrey}{mail_maxbucket} ?
+	$self->{sqlgrey}{mail_bucket} : $self->{sqlgrey}{mail_maxbucket};
 
     $self->mylog('mail', 4, "mail_bucket: $self->{sqlgrey}{mail_bucket}");
     # is there room for a mail ?
@@ -152,8 +164,7 @@ sub sendmail {
 	}
 
         # actual mail sending
-        my $return = system("echo '$content' | " .
-			    "mail -s '$subject' $self->{sqlgrey}{admin_mail}");
+        my $return = system("echo '$content' | mail -s '$subject' $self->{sqlgrey}{admin_mail}");
 	if ($return != 0) {
 	    if ($? == -1) {
 		$self->mylog('mail', 0, "failed to send: $!\n");
@@ -172,7 +183,7 @@ sub sendmail {
     }
 }
 
-sub mydie {
+sub mydie($@) {
     my $self = shift;
     my @errors = @_;
     $self->sendmail('SQLgrey died', join("\n", @errors));
@@ -184,42 +195,35 @@ sub mydie {
 ##########################
 
 # Trigger e-mails when the DB connection's state changes
-sub db_unavailable {
+sub db_unavailable($) {
     my $self = shift;
 
     if ($self->{sqlgrey}{db_available}) {
 	if (! defined $self->{sqlgrey}{dbh}) {
-	    $self->{sqlgrey}{warn_db} &&
-		$self->sendmail('SQLgrey lost database',
-				'SQLgrey lost database connection to: ' .
-				$self->cnctinfo());
+	    $self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey lost database',
+							 'SQLgrey lost database connection to: ' . $self->cnctinfo());
 	} else {
 	    $self->disconnectdb();
-	    $self->{sqlgrey}{warn_db} &&
-		$self->sendmail('SQLgrey database error',
-				'SQLgrey encountered an SQL error and ' .
-				'triggered a reconnection to: ' .
-				$self->cnctinfo());
+	    $self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey database error',
+							 'SQLgrey encountered an SQL error and triggered a reconnection to: ' . $self->cnctinfo());
 	}
 	$self->{sqlgrey}{db_available} = 0;
     }
 }
 
-sub db_available {
+sub db_available($) {
     my $self = shift;
 
     if (! $self->{sqlgrey}{db_available}) {
-	$self->{sqlgrey}{warn_db} &&
-	    $self->sendmail('SQLgrey recovered DB',
-			    'SQLgrey established connection to: ' .
-			    $self->cnctinfo());
+	$self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey recovered DB',
+			'SQLgrey established connection to: ' . $self->cnctinfo());
 	$self->{sqlgrey}{db_available} = 1;
     }
 }
 
 # fault (lost connection) tolerant do
 # allows a RDBMs restart without crash
-sub do {
+sub do($$) {
     my $self = shift;
     my $query = shift;
     my $result;
@@ -242,31 +246,25 @@ sub do {
 }
 
 # prepare_cached needs to check for a dbh
-sub prepare_cached {
+sub prepare_cached($$) {
     my $self = shift;
     my $query = shift;
-
-    if (! $self->{sqlgrey}{db_available}) {
-	$self->connectdb();
-    }
-    if (!defined $self->{sqlgrey}{dbh}) {
-	$self->db_unavailable();
-	return undef;
-    } else {
-	my $result = $self->{sqlgrey}{dbh}->prepare_cached($query);
-	if (! defined $result) {
-	    $self->db_unavailable();
-	} else {
-	    $self->db_available();
-	}
-	return $result;
-    }
+    return $self->_prepare($query, $self->{sqlgrey}{db_prepare_cache});
 }
 
-# prepar needs to check for a dbh
-sub prepare {
+# Wrapper for prepare without cache
+sub prepare($$) {
     my $self = shift;
     my $query = shift;
+    return $self->_prepare($query, 0);
+}
+
+# prepare* need to check for a dbh
+# and reconnect if disconnected
+sub _prepare($$$) {
+    my $self = shift;
+    my $query = shift;
+    my $cache = shift;
 
     if (! $self->{sqlgrey}{db_available}) {
 	$self->connectdb();
@@ -275,7 +273,12 @@ sub prepare {
 	$self->db_unavailable();
 	return undef;
     } else {
-	my $result = $self->{sqlgrey}{dbh}->prepare($query);
+	my $result;
+	if ($cache) {
+	    $result = $self->{sqlgrey}{dbh}->prepare_cached($query);
+	} else {
+	    $result = $self->{sqlgrey}{dbh}->prepare($query);
+	}
 	if (! defined $result) {
 	    $self->db_unavailable();
 	} else {
@@ -288,7 +291,7 @@ sub prepare {
 # quote can't be called directly when dbh is undef
 # we provide a wrapper
 # we don't try to reconnect here
-sub quote {
+sub quote($$) {
     my $self = shift;
     my $toquote = shift;
     if (! defined $self->{sqlgrey}{dbh}) {
@@ -299,9 +302,12 @@ sub quote {
 }
 
 # Check if a table exists
-sub table_exists {
+sub table_exists($$) {
     my $self = shift;
     my $tablename = shift;
+
+    # if we couldn't connect, do as if the table exist
+    defined $self->{sqlgrey}{dbh} or return 1;
     # Seems the most portable way to do it
     # but needs SQL error reporting off at connect time :-<
     # don't use $self->do here (no need to reconnect on error)
@@ -311,22 +317,22 @@ sub table_exists {
 }
 
 # Drop a table
-sub drop_table {
+sub drop_table($$) {
     my $self = shift;
     my $table = shift;
     $self->do("DROP TABLE $table");
 }
 
 # Database type queries
-sub SQLite {
+sub SQLite($) {
     my $self = shift;
     return ($self->{sqlgrey}{db_type} eq 'SQLite');
 }
-sub PostgreSQL {
+sub PostgreSQL($) {
     my $self = shift;
     return ($self->{sqlgrey}{db_type} eq 'Pg');
 }
-sub MySQL {
+sub MySQL($) {
     my $self = shift;
     return ($self->{sqlgrey}{db_type} eq 'mysql');
 }
@@ -336,7 +342,7 @@ sub MySQL {
 # we use $self->{sqlgrey}{dbnow} to make sure the SQL function
 # now() can't make the optimizer think the value can change
 # and make the DB evaluate it for *each* row of the table we'll select from
-sub past_tstamp {
+sub past_tstamp($$$) {
     my ($self, $nb, $unit) = @_;
     if ($self->MySQL()) {
 	# MySQL doesn't want any ' char
@@ -353,8 +359,8 @@ sub past_tstamp {
             $delay = $nb * 60;
         } else {
             # catch syntax errors
-            $self->mydie('Interval error', 'interval(' . $nb . ', ' . $unit .
-			 ") for SQLite, sqlgrey doesn't recognise $unit UNIT");
+            $self->mydie('Interval error', 'interval(' . $nb . ', ' . $unit . ') for SQLite,'
+		. " sqlgrey doesn't recognise $unit UNIT");
         }
 	return 'now() - ' . $delay;
     } else { # use PostgreSQL syntax (probably the most SQL compliant)
@@ -363,7 +369,7 @@ sub past_tstamp {
     }
 }
 
-sub update_dbnow {
+sub update_dbnow($) {
     my $self = shift;
 
     # no dbnow needed for SQLite
@@ -373,9 +379,9 @@ sub update_dbnow {
     my $sth = $self->prepare_cached('SELECT now()');
     if (!defined $sth or !$sth->execute()) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't get now() from DB: $DBI::errstr");
-	return; # we don't update the value
+	$self->mylog('dbaccess', 0, "error: couldn't get now() from DB: $DBI::errstr");
+	return if defined $self->{sqlgrey}{dbnow}; # defined: we don't update the value
+	$self->{sqlgrey}{dbnow} = '0';
     } else {
 	$self->db_available();
 	$result = $sth->fetchall_arrayref();
@@ -384,7 +390,7 @@ sub update_dbnow {
 }
 
 # Create tables if not done already
-sub database_setup {
+sub database_setup($) {
     my $self = shift;
     # AWL and connect tables checks
     if (! $self->table_exists($from_awl)) {
@@ -420,7 +426,9 @@ sub database_setup {
     }
 
     # if config did exist, we have to check the DB version
-    if ($self->currentdbversion() < $DB_VERSION) {
+    my $current_version = $self->currentdbversion();
+    # don't try an upgrade if we couldn't connect
+    if (defined $current_version and $current_version < $DB_VERSION) {
 	$self->mylog('dbaccess', 1, 'upgrading database from ' .
 		   $self->currentdbversion() . ' to ' .
 		   $DB_VERSION);
@@ -434,29 +442,33 @@ sub database_setup {
 # Database configuration related, only used for checking
 # schema version now, might be used to check compatibility
 # between database schema and SQLgrey startup switches in the future
-sub getconfig {
+sub getconfig($$) {
     my $self = shift;
     my $param = shift;
 
     my $sth = $self->prepare_cached("SELECT value FROM $config " .
 				    'WHERE parameter = ?');
     if (!defined $sth or !$sth->execute($param)) {
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $config table: $DBI::errstr");
-	$self->mydie('getconfig error',
-		     'Can\'t continue: config table unreadable');
+	$self->mylog('dbaccess', 0, "error: couldn't access $config table: $DBI::errstr");
+	return undef;
+	#$self->mydie('getconfig error',
+	#	     'Can\'t continue: config table unreadable');
     }
     my $result = $sth->fetchall_arrayref();
     if ($#$result != 0) {
-        $self->mylog('dbaccess', 0, 'error: unexpected SQL result');
-	$self->mydie('getconfig error',
-		     'Can\'t continue: unexpected config table read error');
+	# Only log if there are multiple entries,
+	# nothing is allowed
+        $self->mylog('dbaccess', 0, 'error: unexpected SQL result (getconfig)')
+	    if ($#$result > 0);
+	return undef;
+	#$self->mydie('getconfig error',
+	#	     'Can\'t continue: unexpected config table read error');
     } else {
         return $result->[0][0];
     }
 }
 
-sub setconfig {
+sub setconfig($$$) {
     my $self = shift;
     my $param = shift;
     my $value = shift;
@@ -464,8 +476,7 @@ sub setconfig {
     my $sth = $self->prepare_cached("SELECT value FROM $config " .
 				    'WHERE parameter = ?');
     if (!defined $sth or !$sth->execute($param)) {
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $config table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $config table: $DBI::errstr");
 	$self->mydie('setconfig error',
 		     'Can\'t continue: config table unreadable');
     }
@@ -478,30 +489,36 @@ sub setconfig {
     }
 }
 
-sub updateconfig {
+sub updateconfig($$$) {
     my $self = shift;
     my $param = shift;
     my $value = shift;
-    my $dbh = $self->{sqlgrey}{dbh};
+    my $old_value = shift;
 
-    return $self->do("UPDATE $config SET value = " .
-		     $self->quote($value) .
-		     ' WHERE parameter = ' .
-		     $self->quote($param));
+
+    my $affected_rows = $self->do("UPDATE $config SET value = " .
+                                  $self->quote($value) .
+                                  ' WHERE parameter = ' .
+                                  $self->quote($param) .
+                                    ((defined $old_value) ? " AND value = ".($self->quote($old_value)) : "") # Add to where statement, if old_value is defined
+                                   );
+
+    #DBI returns 0E0 if no rows were affected
+    $affected_rows = 0 if (!defined $affected_rows or $affected_rows eq '0E0');
+    return $affected_rows;
 }
 
-sub insertconfig() {
+sub insertconfig($$$) {
     my $self = shift;
     my $param = shift;
     my $value = shift;
-    my $dbh = $self->{sqlgrey}{dbh};
 
     return $self->do("INSERT INTO $config (parameter, value) VALUES(" .
 		     $self->quote($param) . ',' .
 		     $self->quote($value) . ')');
 }
 
-sub currentdbversion() {
+sub currentdbversion($) {
     my $self = shift;
 
     # No config table -> version 0
@@ -513,7 +530,7 @@ sub currentdbversion() {
     return $self->getconfig('version');
 }
 
-sub upgradedb() {
+sub upgradedb($) {
     my $self = shift;
     my $currentdbver = $self->currentdbversion();
     while ($currentdbver < $DB_VERSION) {
@@ -522,14 +539,13 @@ sub upgradedb() {
     }
 }
 
-sub upgrade() {
+sub upgrade($$) {
     my $self = shift;
     my $ver = shift;
     if ($ver == 0) {
 	$self->mydie('Too old SQLgrey database',
-		     'The current layout of the SQLgrey database is too old,' .
-		     'please launch SQLgrey 1.4 to convert it to a layout ' .
-		     'I can understand');
+		    'The current layout of the SQLgrey database is too old,' .
+		    'please launch SQLgrey 1.4 to convert it to a layout I can understand');
     } elsif ($ver == 1) {
 	$self->upgrade1();
     } elsif ($ver == 2) {
@@ -537,10 +553,9 @@ sub upgrade() {
     }
 }
 
-sub upgrade1() {
+sub upgrade1($) {
     my $self = shift;
-    $self->mylog('dbaccess', 1,
-		 'upgrading database schema from version 1 to version 2');
+    $self->mylog('dbaccess', 1, 'upgrading database schema from version 1 to version 2');
 
     ## Note: SQLite 2.x needs a temporary table (no ALTER TABLE)
     ## can we detect SQLite 3+ ?
@@ -578,8 +593,7 @@ sub upgrade1() {
     $self->create_connect_indexes();
 
     # from_awl
-    $self->mylog('dbaccess', 2,
-		 "$from_awl: renaming host_ip to src, adding first_seen");
+    $self->mylog('dbaccess', 2, "$from_awl: renaming host_ip to src, adding first_seen");
     if ($self->SQLite()) {
 	$self->create_from_awl_table('temp');
 	$self->do('INSERT INTO temp (sender_name, sender_domain, ' .
@@ -612,8 +626,7 @@ sub upgrade1() {
     $self->create_from_awl_indexes();
 
     # domain_awl
-    $self->mylog('dbaccess', 2,
-		 "$domain_awl: renaming host_ip to src, adding first_seen");
+    $self->mylog('dbaccess', 2, "$domain_awl: renaming host_ip to src, adding first_seen");
     if ($self->SQLite()) {
 	$self->create_domain_awl_table('temp');
 	$self->do('INSERT INTO temp (sender_domain, ' .
@@ -649,10 +662,9 @@ sub upgrade1() {
     $self->setconfig('version','2');
 }
 
-sub upgrade2() {
+sub upgrade2($) {
     my $self = shift;
-    $self->mylog('dbaccess', 1,
-		 'upgrading database schema from version 2 to version 3');
+    $self->mylog('dbaccess', 1, 'upgrading database schema from version 2 to version 3');
 
     ## Note: SQLite 2.x needs a temporary table (no ALTER TABLE)
     ## can we detect SQLite 3+ ?
@@ -760,7 +772,7 @@ sub upgrade2() {
 }
 
 # Build a connect string for DBI
-sub cnctinfo {
+sub cnctinfo($) {
 # Tested with PostgreSQL, MySQL and SQLite
     my $self = shift;
     my $dsn = 'DBI:' . $self->{sqlgrey}{db_type};
@@ -782,27 +794,65 @@ sub cnctinfo {
 }
 
 # Global DB Init code
-sub initdb {
+sub initdb($) {
     my $self = shift;
     $self->connectdb();
     $self->update_dbnow();
     $self->database_setup();
 }
 
-sub connectdb {
+sub connectdb($) {
     my $self = shift;
+
     my $options = {PrintError => 0,
 		   AutoCommit => 1};
     # InactiveDestroy has been reported to cause leaks, only use it when needed
     $options->{InactiveDestroy} = 1
 	if ($self->{sqlgrey}{clean_method} ne 'sync');
+
     # we can't use connect_cached as we create another connection
     # in the child responsible for cleanups
-    $self->{sqlgrey}{dbh} = DBI->connect($self->cnctinfo(),
-					 $self->{sqlgrey}{db_user},
-					 $self->{sqlgrey}{db_pass},
-					 $options)
+    no warnings 'uninitialized'; #Perl will spew warn's if running DBI only
+    if ($dflt{db_cluster} ne 'on') {
+
+    	$self->{sqlgrey}{dbh} = DBI->connect($self->cnctinfo(),
+					     $self->{sqlgrey}{db_user},
+					     $self->{sqlgrey}{db_pass},
+					     $options)
 	or $self->mylog('dbaccess', 0, "can't connect to DB: $DBI::errstr");
+
+    } else {
+
+        $self->mylog('dbaccess', 1, "Using DBIx:DBCluster");
+
+        my @read_hosts = split(/[,\s]+/ ,$dflt{'read_hosts'});
+        $self->mylog('dbaccess', 3, "Read_hosts: ".join(', ', @read_hosts));
+
+	#Setting up cluster db's
+    	$DBIx::DBCluster::CLUSTERS = {
+        		"$self->{sqlgrey}{db_host}" => {
+            		'WRITE_HOSTS'  => [$self->{sqlgrey}{db_host}],
+            		'READ_HOSTS'   => [@read_hosts],
+        		},
+    	};
+
+    	#Flags tells DBCluster never to use WRITE_HOSTS for reading
+    	#(unless specified in READ_HOSTS). This only works with Dan Faerch's patch to DBIx::DBCluster
+    	$DBIx::DBCluster::WRITE_HOSTS_NEVER_READ=1;
+
+    	$self->{sqlgrey}{dbh} =
+	    DBIx::DBCluster->connect($self->cnctinfo(),
+				     $self->{sqlgrey}{db_user},
+				     $self->{sqlgrey}{db_pass},
+				     $options)
+		    or $self->mylog('dbaccess', 0,
+				    "can't connect to DB: $DBI::errstr");
+    }
+
+    #Ugly hack to make perl shut up about about "possible typo".
+    1 if ($DBIx::DBCluster::WRITE_HOSTS_NEVER_READ);
+    1 if ($DBIx::DBCluster::CLUSTERS);
+
 
     ## we can't touch dbh if it isn't defined!
     if (! defined $self->{sqlgrey}{dbh}) { return; }
@@ -819,7 +869,7 @@ sub connectdb {
     }
 }
 
-sub disconnectdb {
+sub disconnectdb($) {
     my $self = shift;
     if (defined $self->{sqlgrey}{dbh}) {
 	$self->{sqlgrey}{dbh}->disconnect();
@@ -846,7 +896,7 @@ sub create_from_awl_table {
 	or $self->mydie('create_from_awl_table error',
 			'Couldn\'t create table $tablename: $DBI::errstr');
 }
-sub create_from_awl_indexes {
+sub create_from_awl_indexes($) {
     my $self = shift;
     $self->do("CREATE INDEX $from_awl" . '_lseen ' .
 	     "ON $from_awl (last_seen)")
@@ -868,7 +918,7 @@ sub create_domain_awl_table {
 	or $self->mydie('create_domain_awl_table error',
 			"Couldn't create table $tablename: $DBI::errstr");
 }
-sub create_domain_awl_indexes {
+sub create_domain_awl_indexes($) {
     my $self = shift;
     $self->do("CREATE INDEX $domain_awl" . '_lseen ' .
 	     "ON $domain_awl (last_seen)")
@@ -892,20 +942,19 @@ sub create_connect_table {
 	or $self->mydie('create_connect_table',
 			"Couldn't create table $tablename: $DBI::errstr");
 }
-sub create_connect_indexes {
+sub create_connect_indexes($) {
     my $self = shift;
     $self->do("CREATE INDEX $connect" . '_idx ' .
 	     "ON $connect (src, sender_domain, sender_name)")
 	or $self->mydie('create_connect_table error',
-			"couldn't create index on $connect " .
-			'(src, sender_domain, sender_name)');
+			"couldn't create index on $connect (src, sender_domain, sender_name)");
     $self->do("CREATE INDEX $connect" . '_fseen ' .
 	     "ON $connect (first_seen)")
 	or $self->mydie('create_connect_table error',
 			"couldn't create index on $connect (first_seen)");
 }
 
-sub create_config_table {
+sub create_config_table($) {
     my $self = shift;
     $self->do("CREATE TABLE $config " .
 	      '(parameter varchar(255) NOT NULL, ' .
@@ -917,7 +966,7 @@ sub create_config_table {
     $self->setconfig('version', $DB_VERSION);
 }
 
-sub create_optin_domain_table {
+sub create_optin_domain_table($) {
     my $self = shift;
     $self->do("CREATE TABLE $optin_domain " .
 	      '(domain varchar(255) NOT NULL, ' .
@@ -926,7 +975,7 @@ sub create_optin_domain_table {
 			"Couldn't create table $optin_domain: $DBI::errstr");
 }
 
-sub create_optin_email_table {
+sub create_optin_email_table($) {
     my $self = shift;
     $self->do("CREATE TABLE $optin_email " .
 	      '(email varchar(255) NOT NULL, ' .
@@ -935,7 +984,7 @@ sub create_optin_email_table {
 			"Couldn't create table $optin_email: $DBI::errstr");
 }
 
-sub create_optout_domain_table {
+sub create_optout_domain_table($) {
     my $self = shift;
     $self->do("CREATE TABLE $optout_domain " .
 	      '(domain varchar(255) NOT NULL, ' .
@@ -958,30 +1007,104 @@ sub create_optout_email_table {
 ##########
 
 # don't try too hard to do exact matches here
-sub is_ipv4 {
+sub is_ipv4($) {
     my $addr = shift;
     return (($addr =~ /^[\d\.]*$/) ? 1 : 0);
 }
 
-sub is_ipv6 {
+sub is_ipv6($) {
     my $addr = shift;
     return (($addr =~ /^[0123456789abcdef:]*$/) ? 1 : 0);
 }
 
-sub class_c {
+sub ipv6_normalise($) {
+    my $addr = shift;
+    $addr =~ s/::$/:/; # let split() return only one empty field at the end
+    my @splitted = split(/:/, $addr, -1);
+    my @splitted_norm;
+    foreach my $a (@splitted) {
+        if ($a ne "") {
+            push(@splitted_norm, sprintf("%04s", $a));
+        } else {
+            my $null_parts = 8 - $#splitted;
+            while($null_parts--) {
+                push(@splitted_norm, "0000");
+            }
+        }
+    }
+    return join(":", @splitted_norm);
+}
+
+sub ipv6_is_eui64($) {
+    ## Expects a normalised IPv6 address
+    my $addr = shift;
+    return $addr =~ /:[[:xdigit:]]{2}ff:fe[[:xdigit:]]{2}:[[:xdigit:]]{4}$/;
+}
+
+sub ipv6_is_global_unicast($) {
+    ## Expects a normalised IPv6 address
+    my $addr = shift;
+    return $addr =~ /^[23][[:xdigit:]]{3}/;
+}
+
+sub ipv6_smart($) {
+    my $addr = ipv6_normalise(shift);
+    if (ipv6_is_eui64($addr) and ipv6_is_global_unicast($addr)) {
+        ## For EUI64 return just the prefix/64
+        return join(":", (split(/:/, $addr))[0..3]);
+    } else {
+        ## For Non-EUI64 or Non-Global-Unicast return the address
+        return $addr;
+    }
+}
+
+sub ip_apply_prefix($$) {
+	my ($ip, $prefix) = @_;
+        $ip = ipv6_normalise($ip) if is_ipv6($ip);
+	return $ip if (not defined($prefix));
+	if (is_ipv4($ip)) {
+		if ($prefix < 0 or $prefix > 32) {
+			warn("Invalid IPv4 prefix length $ip/$prefix\n");
+			return $ip;
+		}
+		my $mask = 2**32 - 2**(32-$prefix);
+		my $ipint=unpack("N", pack("C4", split(/\./, $ip)));
+		$ipint &= $mask;
+		return join(".", unpack("C4", pack("N", $ipint)));
+	} elsif (is_ipv6($ip)) {
+		if ($prefix < 0 or $prefix > 128) {
+			warn("Invalid IPv6 prefix length $ip/$prefix\n");
+			return $ip;
+		}
+		my $mask = Math::BigInt->bpow(2, 128) - (Math::BigInt->bpow(2, 128-$prefix));
+		my $iphex = ipv6_normalise($ip);
+		$iphex =~ s/://g;
+		my $ipint = Math::BigInt->new("0x$iphex");
+		# Apply mask to the IP
+		$ip = $ipint->band($mask);	
+		# Convert to string, remove leading 0x and normalise to full-length
+		$ip = sprintf("%032s", substr($ip->as_hex(),2));
+		# Make it look like a normalised IPv6 address
+		$ip = join(":", unpack("a4" x 8, $ip));
+		return $ip;
+	}
+	warn("$ip - unknown address family\n");
+	return $ip;
+}
+
+sub class_c($) {
     my $addr = shift;
     if (is_ipv4($addr)) {
 	return join('.', (split(/\./, $addr))[0..2]);
     } elsif (is_ipv6($addr)) {
-	my @splitted = split(/:/, $addr);
-	return join(':', $splitted[0 .. ($#splitted - 2)]);
+	return ipv6_smart($addr);
     } else {
 	# don't know, don't touch...
 	return $addr;
     }
 }
 
-sub get_last_addr_part {
+sub get_last_addr_part($) {
     my $addr = shift;
     if (is_ipv4($addr)) {
 	return (split(/\./, $addr))[3];
@@ -1000,31 +1123,53 @@ sub get_last_addr_part {
 
 # generic single-use addresses
 # normaliser
-sub deverp_user {
-    my $user = shift;
+sub deverp_user($$) {
+    my ($user, $rcpt) = @_;
 
     ## Try to match single-use addresses
     # SRS (first and subsequent levels of forwarding)
     $user =~ s/^srs0=[^=]+=[^=]+=([^=]+)=([^=]+)$/srs0=#=#=$1=$2/;
     $user =~ s/^srs1=[^=]+=([^=]+)(=+)[^=]+=[^=]+=([^=]+)=([^=]+)$/srs1=#=$1$2#=#=$3=$4/;
+
     # strip extension, used sometimes for mailing-list VERP
     $user =~ s/\+.*//;
-    # strip hexadecimal sequences (doable in one regexp ?)
-    # don't strip a leading hex sequence though
-    my $tmp = '';
-    while ($tmp ne $user) {
-	$tmp = $user;
-	$user =~ s/([._-])[0-9a-f]+([._-])/$1#$2/g;
-    }
-    $user =~ s/([._-])[0-9a-f]+$/$1#/g;
+
+    ## BATV
+    # eliminate recipient put in originator
+    my $dot_sep_re = '[\.\*-]+';
+    my $at_sep_re = '[=\?\*~\.]+';
+    my ($rcpt_lhs, $rcpt_rhs) = split /\@/, $rcpt, 2;
+
+    # quote all pattern metacharacters and replace '.' with match of possible separators
+    $rcpt_lhs = join $dot_sep_re, map { "\Q$_\E"}  split /\./, $rcpt_lhs;
+    $rcpt_rhs = join $dot_sep_re, map { "\Q$_\E"}  split /\./, $rcpt_rhs;
+
+    # build pattern with the 3 alternatives to match recipient in originator
+    # BATV implementations use third or first alternative (first by abuse.net)
+    my $pat = qr/$rcpt_lhs$at_sep_re$rcpt_rhs|$rcpt_rhs$at_sep_re$rcpt_lhs|$rcpt_lhs/;
+
+    # replace address with capital RCPT to be safe with deletes
+    # (MySQL matches case insensitive unfortunately)
+    $user =~ s/(?<=[\*=\.-])$pat|$pat(?=[\*=\.-])/RCPT/;
+
+    # strip frequently used bounce/return masks
+    $user =~ s/((bo|bounce|notice-return|notice-reply)[\._-])[0-9a-z-_\.]+$/$1#/g; # Added by JR
+
+    # strip hexadecimal sequences
+    # at the beginning only if user will contain at least 4 consecutive alpha chars
+    $user =~ s/^[0-9a-f]{2,}(?=[._\/=-].*[a-z]{4,})|(?<=[._\/=-])[0-9a-f]+(?=[._\/=-]|$)/#/g;
 
     return $user;
 }
 
-# get sender's user/domain
-sub normalize_sender {
+# returns:
+# 1/ sender's user
+# 2/ sender's domain
+# 3/ sender's deverped address
+sub normalize_sender($$$) {
     my $self = shift;
     my $from = lc shift;
+    my $rcpt = lc shift;
     my $empty = '-undef-';
     if ($from eq '') {
         # Probably MAILER-DAEMON talking to us
@@ -1047,11 +1192,11 @@ sub normalize_sender {
     # per RFC, user should be < 64, domain < 255
     # our database schema doesn't support more
     return (substr($user, 0, 64),substr($domain, 0, 255),
-	    substr(deverp_user($user), 0, 64));
+	    substr(deverp_user($user, $rcpt), 0, 64));
 }
 
 # make sure rcpt will be VARCHAR storable
-sub normalize_rcpt {
+sub normalize_rcpt($$) {
     my $self = shift;
 
     # trim to 255 chars ( although "$user" . "@" . "$domain"
@@ -1068,7 +1213,7 @@ sub normalize_rcpt {
 
 ## Match connections to AWLs ##
 
-sub is_in_from_awl {
+sub is_in_from_awl($$$$) {
     my ($self, $sender_name, $sender_domain, $host) = @_;
 
     # last_seen less than $self->{sqlgrey}{awl_age} days ago
@@ -1082,8 +1227,7 @@ sub is_in_from_awl {
 			    );
     if (!defined $sth or !$sth->execute($sender_name, $sender_domain, $host)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $from_awl table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $from_awl table: $DBI::errstr");
         return 1; # in doubt, accept
     } else {
 	$self->db_available();
@@ -1096,7 +1240,7 @@ sub is_in_from_awl {
     }
 }
 
-sub is_in_domain_awl {
+sub is_in_domain_awl($$$) {
     my ($self, $sender_domain, $host) = @_;
 
     # last_seen less than $self->{sqlgrey}{awl_age} days ago
@@ -1109,8 +1253,7 @@ sub is_in_domain_awl {
 			    );
     if (!defined $sth or !$sth->execute($sender_domain, $host)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $domain_awl table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $domain_awl table: $DBI::errstr");
         return 1; # in doubt, accept
     } else {
 	$self->db_available();
@@ -1125,7 +1268,7 @@ sub is_in_domain_awl {
 
 ## Put entries in AWLs ##
 
-sub put_in_from_awl {
+sub put_in_from_awl($$$$$) {
     my ($self, $sender_name, $sender_domain, $host, $first_seen) = @_;
 
     # delete old entries
@@ -1143,7 +1286,7 @@ sub put_in_from_awl {
 	      $self->quote($first_seen) . ',NOW())');
 }
 
-sub put_in_domain_awl {
+sub put_in_domain_awl($$$$) {
     my ($self, $sender_domain, $host, $first_seen) = @_;
 
     # delete old entries
@@ -1161,7 +1304,7 @@ sub put_in_domain_awl {
 
 ## Update AWL entries ##
 
-sub update_from_awl {
+sub update_from_awl($$$$) {
     my ($self, $sender_name, $sender_domain, $host) = @_;
 
     $self->do("UPDATE $from_awl " .
@@ -1171,7 +1314,7 @@ sub update_from_awl {
 	      ' AND src = ' . $self->quote($host));
 }
 
-sub update_domain_awl {
+sub update_domain_awl($$$) {
     my ($self, $sender_domain, $host) = @_;
 
     $self->do("UPDATE $domain_awl " .
@@ -1181,15 +1324,14 @@ sub update_domain_awl {
 }
 
 # check from_awl entries for a domain/IP
-sub count_from_awl {
+sub count_from_awl($$$) {
     my ($self, $sender_domain, $host) = @_;
 
     my $sth = $self->prepare_cached("SELECT COUNT(*) FROM $from_awl " .
 				    'WHERE sender_domain = ? AND src = ?');
     if (!defined $sth or !$sth->execute($sender_domain, $host)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $from_awl table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $from_awl table: $DBI::errstr");
         return 0; # do as if table is empty
     } else {
 	$self->db_available();
@@ -1197,7 +1339,76 @@ sub count_from_awl {
 
     my $result = $sth->fetchall_arrayref();
     if ($#$result != 0) {
-        $self->mylog('dbaccess', 0, 'error: unexpected SQL result');
+        $self->mylog('dbaccess', 0, 'error: unexpected SQL result (count_from_awl)');
+	return 0; # do as if table is empty
+    } else {
+        return $result->[0][0];
+    }
+}
+
+# Check number of entries from a given IP in domain_awl
+sub count_src_domain_awl($$) {
+    my ($self, $host) = @_;
+
+    my $sth = $self->prepare_cached("SELECT COUNT(*) FROM $domain_awl " .
+				    'WHERE src = ?');
+    if (!defined $sth or !$sth->execute($host)) {
+	$self->db_unavailable();
+	$self->mylog('dbaccess', 0, "error: couldn't access $domain_awl table: $DBI::errstr");
+        return 0; # do as if table is empty
+    } else {
+	$self->db_available();
+    }
+
+    my $result = $sth->fetchall_arrayref();
+    if ($#$result != 0) {
+        $self->mylog('dbaccess', 0, 'error: unexpected SQL result (count_src_domain_awl)');
+	return 0; # do as if table is empty
+    } else {
+        return $result->[0][0];
+    }
+}
+
+# Check number of entries from a given IP in from_awl
+sub count_src_from_awl($$) {
+    my ($self, $host) = @_;
+
+    my $sth = $self->prepare_cached("SELECT COUNT(*) FROM $from_awl " .
+				    'WHERE src = ?');
+    if (!defined $sth or !$sth->execute($host)) {
+	$self->db_unavailable();
+	$self->mylog('dbaccess', 0, "error: couldn't access $from_awl table: $DBI::errstr");
+        return 0; # do as if table is empty
+    } else {
+	$self->db_available();
+    }
+
+    my $result = $sth->fetchall_arrayref();
+    if ($#$result != 0) {
+        $self->mylog('dbaccess', 0, 'error: unexpected SQL result (count_src_from_awl)');
+	return 0; # do as if table is empty
+    } else {
+        return $result->[0][0];
+    }
+}
+
+# Check number of entries from a given IP in connect
+sub count_src_connect($$) {
+    my ($self, $host) = @_;
+
+    my $sth = $self->prepare_cached("SELECT COUNT(*) FROM $connect " .
+				    'WHERE src = ?');
+    if (!defined $sth or !$sth->execute($host)) {
+	$self->db_unavailable();
+	$self->mylog('dbaccess', 0, "error: couldn't access $connect table: $DBI::errstr");
+        return 0; # do as if table is empty
+    } else {
+	$self->db_available();
+    }
+
+    my $result = $sth->fetchall_arrayref();
+    if ($#$result != 0) {
+        $self->mylog('dbaccess', 0, 'error: unexpected SQL result (count_src_connect)');
 	return 0; # do as if table is empty
     } else {
         return $result->[0][0];
@@ -1206,7 +1417,7 @@ sub count_from_awl {
 
 ## Cleanup AWL entries ##
 
-sub cleanup_from_awl {
+sub cleanup_from_awl($) {
     my ($self) = @_;
 
     my $rows = $self->do("DELETE FROM $from_awl " .
@@ -1214,11 +1425,11 @@ sub cleanup_from_awl {
 	                 $self->past_tstamp($self->{sqlgrey}{awl_age}, 'DAY')
 	                );
 
-    $rows = 0 if (! defined $rows or ($rows eq '0E0'));
+    $rows = 0 if (!defined $rows or $rows eq '0E0');
     return $rows;
 }
 
-sub cleanup_domain_awl {
+sub cleanup_domain_awl($) {
     my ($self) = @_;
 
     my $rows = $self->do("DELETE FROM $domain_awl " .
@@ -1226,19 +1437,26 @@ sub cleanup_domain_awl {
 	                 $self->past_tstamp($self->{sqlgrey}{awl_age}, 'DAY')
 	                );
 
-    $rows = 0 if (! defined $rows or ($rows eq '0E0'));
+    $rows = 0 if (!defined $rows or $rows eq '0E0');
     return $rows;
 }
 
-sub delete_domain_from_mail_awl {
+sub delete_domain_from_mail_awl($$$) {
     my ($self, $domain, $host) = @_;
     $self->do("DELETE FROM $from_awl " .
 	      'WHERE sender_domain = ' . $self->quote($domain) .
 	      ' AND src = ' . $self->quote($host));
 }
 
+sub delete_domain_from_connect($$$) {
+    my ($self, $domain, $host) = @_;
+    $self->do("DELETE FROM $connect " .
+	      'WHERE sender_domain = ' . $self->quote($domain) .
+	      ' AND src = ' . $self->quote($host));
+}
+
 # Active domain AWL for a domain/IP
-sub move_domain_from_mail_to_domain_awl {
+sub move_domain_from_mail_to_domain_awl($$$) {
     my ($self, $domain, $host) = @_;
 
     my $first_seen = $self->get_first_seen_in_from_awl($domain, $host);
@@ -1246,15 +1464,14 @@ sub move_domain_from_mail_to_domain_awl {
     $self->delete_domain_from_mail_awl($domain, $host);
 }
 
-sub get_first_seen_in_from_awl {
+sub get_first_seen_in_from_awl($$$) {
     my ($self, $domain, $host) = @_;
     my $sth = $self->prepare_cached("SELECT MIN(first_seen) FROM $from_awl " .
 				    'WHERE sender_domain = ? AND src = ?');
 
     if (!defined $sth or !$sth->execute($domain, $host)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $from_awl table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $from_awl table: $DBI::errstr");
         return 0; # do as if table is empty
     } else {
 	$self->db_available();
@@ -1262,8 +1479,7 @@ sub get_first_seen_in_from_awl {
 
     my $result = $sth->fetchall_arrayref();
     if ($#$result != 0) {
-        $self->mylog('grey', 0,
-		     "error: unexpected SQL result in get_first_seen_in_from_awl");
+        $self->mylog('grey', 0, 'error: unexpected SQL result (get_first_seen_in_from_awl)');
 	return 0; # do as if table is empty
     } else {
         return $result->[0][0];
@@ -1274,7 +1490,7 @@ sub get_first_seen_in_from_awl {
 ## Connect
 
 # check for a valid reconnection
-sub in_connect {
+sub in_connect($$$$$) {
     my ($self, $sender_name, $sender_domain, $addr, $rcpt) = @_;
 
     # last_seen less than $self->{sqlgrey}{max_connect_age} hours ago
@@ -1289,11 +1505,9 @@ sub in_connect {
 			     $self->past_tstamp($self->{sqlgrey}{reconnect_delay},
 						'MINUTE')
 			    );
-    if (!defined $sth or
-	!$sth->execute($sender_name, $sender_domain, $addr, $rcpt)) {
+    if (!defined $sth or !$sth->execute($sender_name, $sender_domain, $addr, $rcpt)) {
 	$self->db_unavailable();
-        $self->mylog('dbaccess', 0,
-		     "error: couldn't access $connect table: $DBI::errstr");
+        $self->mylog('dbaccess', 0, "error: couldn't access $connect table: $DBI::errstr");
         return 1; # in doubt, accept
     } else {
 	$self->db_available();
@@ -1307,7 +1521,7 @@ sub in_connect {
 }
 
 # check for early reconnection
-sub recently_in_connect {
+sub recently_in_connect($$$$$) {
     my ($self, $sender_name, $sender_domain, $addr, $rcpt) = @_;
 
     # last_seen less than $self->{sqlgrey}{reconnect_delay} minutes ago
@@ -1318,11 +1532,9 @@ sub recently_in_connect {
 			     $self->past_tstamp($self->{sqlgrey}{reconnect_delay},
 						'MINUTE')
 			     );
-    if (!defined $sth or
-	!$sth->execute($sender_name, $sender_domain, $addr, $rcpt)) {
+    if (!defined $sth or !$sth->execute($sender_name, $sender_domain, $addr, $rcpt)) {
 	$self->db_unavailable();
-        $self->mylog('dbaccess', 0,
-		     "error: Couldn't access $connect table: $DBI::errstr");
+        $self->mylog('dbaccess', 0, "error: Couldn't access $connect table: $DBI::errstr");
         return 0; # in doubt, accept
     } else {
 	$self->db_available();
@@ -1336,7 +1548,7 @@ sub recently_in_connect {
 }
 
 # add a first attempt
-sub put_in_connect {
+sub put_in_connect($$$$$) {
     my ($self, $sender_name, $sender_domain, $addr, $rcpt) = @_;
 
     # create new entry
@@ -1350,7 +1562,7 @@ sub put_in_connect {
 }
 
 # For logging purpose
-sub get_reconnect_delay {
+sub get_reconnect_delay($$$$$) {
     my ($self, $sender_name, $sender_domain, $addr, $rcpt) = @_;
 
     my $query;
@@ -1367,17 +1579,15 @@ sub get_reconnect_delay {
     if (!defined $sth or !$sth->execute($sender_name, $sender_domain,
 					$addr, $rcpt)) {
 	$self->db_unavailable();
-        $self->mylog('dbaccess', 0,
-		     "error: couldn't get reconnect delay: $DBI::errstr");
+        $self->mylog('dbaccess', 0, "error: couldn't get reconnect delay: $DBI::errstr");
         return 'sql error';
     } else {
 	$self->db_available();
     }
     my $result = $sth->fetchall_arrayref();
     if ($#$result < 0) {
-        $self->mylog('grey', 0,
-		     'get_reconnect_delay error: no connect in database for ' .
-		     "$sender_name\@$sender_domain, $addr, $rcpt");
+        $self->mylog('grey', 0, 'get_reconnect_delay error: no connect in database for ' .
+		      "$sender_name\@$sender_domain, $addr, $rcpt");
 	return 'error: nothing in connect';
     } else {
         return $result->[0][0], $result->[0][1];
@@ -1385,17 +1595,19 @@ sub get_reconnect_delay {
 }
 
 # Clean connect entries for a whitelisted mail/IP
-sub delete_mail_ip_from_connect {
-    my ($self, $sender_name, $sender_domain, $addr) = @_;
+sub delete_mail_ip_from_connect($$$$) {
+    my ($self, $deverp_sender_name, $sender_domain, $addr) = @_;
+
+    $deverp_sender_name =~ s/#/%/g;
 
     $self->do("DELETE FROM $connect " .
-	      'WHERE sender_name = ' . $self->quote($sender_name) .
+	      'WHERE src = ' . $self->quote($addr) .
 	      ' AND sender_domain = ' . $self->quote($sender_domain) .
-	      ' AND src = ' . $self->quote($addr));
+	      ' AND sender_name LIKE ' . $self->quote($deverp_sender_name) );
 }
 
 # clean probable SPAM attempts and log them
-sub cleanup_connect {
+sub cleanup_connect($) {
     my $self = shift;
     my $tstamp = $self->past_tstamp($self->{sqlgrey}{max_connect_age}, 'HOUR');
 
@@ -1417,8 +1629,7 @@ sub cleanup_connect {
         } else {
 	    $self->db_unavailable();
 	    $self->mylog('dbaccess', 0,
-			 "error: couldn't list detected spam attempts: " .
-			 "$DBI::errstr");
+			 "error: couldn't list detected spam attempts: $DBI::errstr");
         }
     }
     my $rows = $self->do("DELETE FROM $connect " .
@@ -1427,7 +1638,7 @@ sub cleanup_connect {
 	                );
 
    # DBI returns 0E0 if no rows is affected.
-   $rows = 0 if (! defined $rows or ($rows eq '0E0'));
+   $rows = 0 if (!defined $rows or $rows eq '0E0');
 
    return $rows;
 }
@@ -1435,27 +1646,33 @@ sub cleanup_connect {
 ## Choose the actual cleanup method
 sub start_cleanup {
     my $self = shift;
+
+    if ($dflt{dont_db_clean}) {
+            $self->mylog('conf', 2, "This host has db-cleaning disabled");
+            return;
+    }
+
     if ($self->{sqlgrey}{clean_method} eq 'sync') {
-	$self->cleanup();
+        $self->cleanup();
     } else {
-	$self->fork_cleanup();
+        $self->fork_cleanup();
     }
 }
 
+
 ## Synchronous cleanup
-sub cleanup {
+sub cleanup($) {
     my ($self) = @_;
     my $time = time();
     my $frows = $self->cleanup_from_awl();
     my $drows = $self->cleanup_domain_awl();
     my $crows = $self->cleanup_connect();
     $time = time() - $time;
-    $self->mylog('perf', 2, 'spent ' . $time . "s cleaning: " .
-		 "from_awl ($frows) domain_awl ($drows) connect ($crows)");
+    $self->mylog('perf', 2, 'spent ' . $time . "s cleaning: from_awl ($frows) domain_awl ($drows) connect ($crows)");
 }
 
 ## Forked cleanup
-sub fork_cleanup {
+sub fork_cleanup($) {
     my $self = shift;
     my $pid = fork();
     if (!defined $pid) {
@@ -1479,7 +1696,7 @@ sub fork_cleanup {
 ## Whitelisting ##
 ##################
 
-sub init_whitelists {
+sub init_whitelists($) {
     my $self = shift;
     $self->read_ip_whitelists();
     $self->read_fqdn_whitelists();
@@ -1488,76 +1705,111 @@ sub init_whitelists {
     $self->{sqlgrey}{dynfqdntime} = get_mtime($dyn_fqdn_whitelist_file);
 }
 
-sub read_ip_whitelists {
+sub read_ip_whitelists($) {
     my $self = shift;
     $self->read_static_ip_whitelist();
     $self->read_dyn_ip_whitelist();
 }
 
-sub read_fqdn_whitelists {
+sub read_fqdn_whitelists($) {
     my $self = shift;
     $self->read_static_fqdn_whitelist();
     $self->read_dyn_fqdn_whitelist();
 }
 
-sub read_static_ip_whitelist {
+sub read_static_ip_whitelist($) {
     my $self = shift;
     $self->{sqlgrey}{stat_ip_whitelist} =
 	$self->read_an_ip_whitelist($stat_ip_whitelist_file);
 }
 
-sub read_dyn_ip_whitelist {
+sub read_dyn_ip_whitelist($) {
     my $self = shift;
     $self->{sqlgrey}{dyn_ip_whitelist} =
 	$self->read_an_ip_whitelist($dyn_ip_whitelist_file);
 }
 
-sub read_an_ip_whitelist {
+sub lookup_ip_in_whitelist($$) {
+    my ($whitelist, $ip) = @_;
+    my $ip_ver = is_ipv4($ip) ? 4 : 6;
+    #my %w = ($whitelist->{$ip_ver});
+	foreach my $prefix (sort(keys(%{$whitelist->{$ip_ver}}))) {
+		my $ip_masked = ip_apply_prefix($ip, $prefix);
+		return $prefix if (defined($whitelist->{$ip_ver}{$prefix}{$ip_masked}));
+	}
+	return -1;
+}
+
+sub add_ip_to_whitelist($$$) {
+    my ($whitelist, $ip, $prefixlen) = @_;
+
+    my $ip_masked = ip_apply_prefix($ip, $prefixlen);
+    my $ip_ver = is_ipv4($ip) ? 4 : 6;
+    if (not defined($whitelist->{$ip_ver}{$prefixlen})) {
+        $whitelist->{$ip_ver}{$prefixlen} = {};
+	}
+	$whitelist->{$ip_ver}{$prefixlen}{$ip_masked} = 1;
+}
+
+sub read_an_ip_whitelist($$) {
     my $self = shift;
     my $file = shift;
     # Prepare empty whitelist
     my $whitelist;
-    $whitelist->{IP} = {};
-    $whitelist->{C} = {};
+    $whitelist->{4} = undef;
+    $whitelist->{6} = undef;
+    my ($ip, $prefixlen);
     if (! open (FILE, '<' . $file)) {
 	$self->mylog('conf', 1, "warning: $file not found or unreadable");
 	return $whitelist;
     }
     while (<FILE>) {
-	chomp;
-	# strip comments
-	s/#.*//;
-	# strip spaces
-	s/\s+//;
-	# Anything left ?
-	next unless length;
-	if (/^\d+\.\d+\.\d+\.\d+$/) {
-	    $whitelist->{IP}{$_} = '';
-	    next;
-	} elsif (/^\d+\.\d+\.\d+$/) {
-	    $whitelist->{C}{$_} = '';
-	    next;
-	} else {
-	    $self->mylog('conf', 0, "unrecognised line in $file: $_");
-	}
+        chomp;
+        # strip comments
+        s/#.*//;
+        # strip spaces
+        s/\s+//g;
+        # Anything left ?
+        next unless length;
+        $ip = undef;
+        if (/^(.*)\/(\d+)$/) {
+            $ip = $1;
+            $prefixlen = $2;
+        } elsif (/^\d+\.\d+\.\d+\.\d+$/) {
+            $ip = $_;
+            $prefixlen = 32;
+        } elsif (/^\d+\.\d+\.\d+$/) {
+            $ip = "$_.0";
+            $prefixlen = 24;
+        } elsif (is_ipv6($_)) {
+            $ip = $_;
+            $prefixlen = 128;
+        }
+        if (not defined($ip) or not $prefixlen >= 0 or
+                not ((is_ipv4($ip) and $prefixlen <= 32) or 
+                     (is_ipv6($ip) and $prefixlen <= 128))) {
+            $self->mylog('conf', 0, "unrecognised line in $file: $_");
+            next;
+        }
+        add_ip_to_whitelist($whitelist, $ip, $prefixlen);
     }
     close FILE;
     return $whitelist;
 }
 
-sub read_static_fqdn_whitelist {
+sub read_static_fqdn_whitelist($) {
     my $self = shift;
     $self->{sqlgrey}{stat_fqdn_whitelist} =
 	$self->read_an_fqdn_whitelist($stat_fqdn_whitelist_file);
 }
 
-sub read_dyn_fqdn_whitelist {
+sub read_dyn_fqdn_whitelist($) {
     my $self = shift;
     $self->{sqlgrey}{dyn_fqdn_whitelist} =
 	$self->read_an_fqdn_whitelist($dyn_fqdn_whitelist_file);
 }
 
-sub read_an_fqdn_whitelist {
+sub read_an_fqdn_whitelist($$) {
     my $self = shift;
     my $file = shift;
 
@@ -1597,32 +1849,32 @@ sub read_an_fqdn_whitelist {
     return $whitelist;
 }
 
-sub update_dyn_whitelists {
+sub update_dyn_whitelists($) {
     my $self = shift;
     $self->update_dyn_ip_whitelist();
     $self->update_dyn_fqdn_whitelist();
 }
 
 # Set the reload flag
-sub mark_reload_request {
+sub mark_reload_request() {
     $reload = 1;
 }
 
 # When not in the middle of a processing...
 # check the reload flag
-sub got_reload_request {
+sub got_reload_request() {
     my $myreload = ($reload == 1);
     $reload = 0;
     return ($myreload);
 }
 
-sub update_static_whitelists {
+sub update_static_whitelists($) {
     my $self = shift;
     $self->read_static_ip_whitelist();
     $self->read_dyn_fqdn_whitelist();
 }
 
-sub get_mtime {
+sub get_mtime($) {
     my $file = shift;
     # file exists ?
     if (stat($file)) {
@@ -1633,7 +1885,7 @@ sub get_mtime {
     }
 }
 
-sub update_dyn_ip_whitelist {
+sub update_dyn_ip_whitelist($) {
     my $self = shift;
     my $dyntime = get_mtime($dyn_ip_whitelist_file);
     if ($dyntime > $self->{sqlgrey}{dyniptime}) {
@@ -1643,7 +1895,7 @@ sub update_dyn_ip_whitelist {
     }
 }
 
-sub update_dyn_fqdn_whitelist {
+sub update_dyn_fqdn_whitelist($) {
     my $self = shift;
     my $dyntime = get_mtime($dyn_fqdn_whitelist_file);
     if ($dyntime > $self->{sqlgrey}{dynfqdntime}) {
@@ -1653,7 +1905,7 @@ sub update_dyn_fqdn_whitelist {
     }
 }
 
-sub is_in_whitelists {
+sub is_in_whitelists($$$$$$) {
     ## expects all parameters
     ## for rcpt_whitelists for example
     my ($self, $sender_name, $sender_domain, $ip, $fqdn, $rcpt) = @_;
@@ -1661,59 +1913,51 @@ sub is_in_whitelists {
 	$self->is_in_fqdn_whitelists($fqdn));
 }
 
-sub is_in_ip_whitelists {
+sub is_in_ip_whitelists($$) {
     my ($self, $ip) = @_;
     return ($self->is_in_static_ip_whitelist($ip)
 	or $self->is_in_dyn_ip_whitelist($ip));
 }
 
-sub is_in_fqdn_whitelists {
+sub is_in_fqdn_whitelists($$) {
     my ($self, $fqdn) = @_;
     return ($self->is_in_static_fqdn_whitelist($fqdn)
 	or $self->is_in_dyn_fqdn_whitelist($fqdn));
 }
 
-sub is_in_static_ip_whitelist {
+sub is_in_static_ip_whitelist($$) {
     my ($self, $ip) = @_;
-    if (defined $self->{sqlgrey}{stat_ip_whitelist}->{IP}{$ip}) {
-	$self->mylog('whitelist', 3, "$ip in static IP whitelist");
-	return 1;
-    }
-    if (defined $self->{sqlgrey}{stat_ip_whitelist}->{C}{class_c($ip)}) {
-	$self->mylog('whitelist', 3, "$ip in static class-C whitelist");
+    if (lookup_ip_in_whitelist($self->{sqlgrey}{stat_ip_whitelist}, $ip) >= 0) {
+	$self->mylog('whitelist', 3, "$ip in static whitelist");
 	return 1;
     }
     return 0;
 }
 
-sub is_in_dyn_ip_whitelist {
+sub is_in_dyn_ip_whitelist($$) {
     my ($self, $ip) = @_;
-    if (defined $self->{sqlgrey}{dyn_ip_whitelist}->{IP}{$ip}) {
-	$self->mylog('whitelist', 3, "$ip in dynamic IP whitelist");
-	return 1;
-    }
-    if (defined $self->{sqlgrey}{dyn_ip_whitelist}->{C}{class_c($ip)}) {
-	$self->mylog('whitelist', 3, "$ip in dynamic class-C whitelist");
+    if (lookup_ip_in_whitelist($self->{sqlgrey}{dyn_ip_whitelist}, $ip) >= 0) {
+	$self->mylog('whitelist', 3, "$ip in dynamic whitelist");
 	return 1;
     }
     return 0;
 }
 
-sub is_in_static_fqdn_whitelist {
+sub is_in_static_fqdn_whitelist($$) {
     my ($self, $fqdn) = @_;
     return $self->is_in_fqdn_whitelist($fqdn,
 				       $self->{sqlgrey}{stat_fqdn_whitelist},
 				       'static');
 }
 
-sub is_in_dyn_fqdn_whitelist {
+sub is_in_dyn_fqdn_whitelist($$) {
     my ($self, $fqdn) = @_;
     return $self->is_in_fqdn_whitelist($fqdn,
 				       $self->{sqlgrey}{dyn_fqdn_whitelist},
 				       'dynamic');
 }
 
-sub is_in_fqdn_whitelist {
+sub is_in_fqdn_whitelist($$$$) {
     my ($self, $fqdn, $whitelist, $type) = @_;
     # check hostnames
     if (defined $whitelist->{system}->{$fqdn}) {
@@ -1723,8 +1967,7 @@ sub is_in_fqdn_whitelist {
     # check domains
     foreach my $domain (@{$whitelist->{domain}}) {
 	if ($fqdn =~ /\.$domain$/) {
-	    $self->mylog('whitelist', 3,
-			 "$fqdn: $domain domain in $type whitelist");
+	    $self->mylog('whitelist', 3, "$fqdn: $domain domain in $type whitelist");
 	    return 1;
 	}
     }
@@ -1743,7 +1986,7 @@ sub is_in_fqdn_whitelist {
 ## Optin / Optout ##
 ####################
 
-sub greylisting_active {
+sub greylisting_active($$) {
     my ($self, $email) = @_;
     my $domain = (split(/@/, $email))[1];
     if ($self->{sqlgrey}{optmethod} eq 'optin') {
@@ -1765,15 +2008,14 @@ sub greylisting_active {
     }
 }
 
-sub is_in_optin_domain {
+sub is_in_optin_domain($$) {
     my ($self, $domain) = @_;
 
     my $sth = $self->prepare_cached("SELECT 1 FROM $optin_domain " .
 				    'WHERE domain = ?');
     if (!defined $sth or !$sth->execute($domain)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $optin_domain table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $optin_domain table: $DBI::errstr");
         return 0; # in doubt, no greylisting
     } else {
 	$self->db_available();
@@ -1788,15 +2030,14 @@ sub is_in_optin_domain {
     }
 }
 
-sub is_in_optin_email {
+sub is_in_optin_email($$) {
     my ($self, $email) = @_;
 
     my $sth = $self->prepare_cached("SELECT 1 FROM $optin_email " .
 				    'WHERE email = ?');
     if (!defined $sth or !$sth->execute($email)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $optin_email table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $optin_email table: $DBI::errstr");
         return 0; # in doubt, no greylisting
     } else {
 	$self->db_available();
@@ -1811,15 +2052,14 @@ sub is_in_optin_email {
     }
 }
 
-sub is_in_optout_domain {
+sub is_in_optout_domain($$) {
     my ($self, $domain) = @_;
 
     my $sth = $self->prepare_cached("SELECT 1 FROM $optout_domain " .
 				    'WHERE domain = ?');
     if (!defined $sth or !$sth->execute($domain)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $optout_domain table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $optout_domain table: $DBI::errstr");
         return 1; # in doubt, no greylisting
     } else {
 	$self->db_available();
@@ -1834,15 +2074,14 @@ sub is_in_optout_domain {
     }
 }
 
-sub is_in_optout_email {
+sub is_in_optout_email($$) {
     my ($self, $email) = @_;
 
     my $sth = $self->prepare_cached("SELECT 1 FROM $optout_email " .
 				    'WHERE email = ?');
     if (!defined $sth or !$sth->execute($email)) {
 	$self->db_unavailable();
-	$self->mylog('dbaccess', 0,
-		     "error: couldn't access $optin_email table: $DBI::errstr");
+	$self->mylog('dbaccess', 0, "error: couldn't access $optin_email table: $DBI::errstr");
         return 1; # in doubt, no greylisting
     } else {
 	$self->db_available();
@@ -1857,17 +2096,108 @@ sub is_in_optout_email {
     }
 }
 
+################################
+## Discriminating Greylisting ##
+################################
+
+sub init_discrimination($) {
+    my $self = shift;
+
+    # If discimination is enabled, load the regexps and
+    # convert configuration value into a 1/0 (true/false) value
+    if ($dflt{discrimination} =~ m/on/i) {
+            $dflt{discrimination}=1;
+            $dflt{discrimination_add_rulenr}= ($dflt{discrimination_add_rulenr}=~ m/on/i) ? 1 : 0;
+
+	    $self->read_discrimination_regexp(); #Read regexp file
+    } else {
+            $dflt{discrimination}=0;
+    }
+}
+
+
+sub read_discimination_regexp_file($$) {
+    my $self = shift;
+    my $file = shift;
+
+    my ($data);
+    if (! open (REGEXP, '<' . $file)) {
+	$self->mylog('conf', 0, "error: $file not found or unreadable");
+	return '.'; # fallback regexp
+    } else {
+	my $count = 0;
+	while (<REGEXP>) {
+	    chomp;
+	    s/#.*//; # Remove comments
+	    if (m/(\w+)\s*(?:([=!]([~=]))?)\s*(.*?)\s*$/) { # capture attrib-name, comparison-operater (as = or !) and regex
+	        $data->{$1}->{++$count}->{oper} = $2;     	    	    # Store the data in a hash (attrib-name => comparison-operator)
+	        $data->{$1}->{$count}->{regex} = qr/$4/ if ($3 eq '~');	    # Store the data in a hash (attrib-name => compiled regex)
+	        $data->{$1}->{$count}->{regex} = $4     if ($3 eq '=');     # Store the data in a hash (attrib-name => attrib-name)
+	    } elsif (!m/^\s*$/) {
+	         $self->mylog('conf', 1, "Skipping invalid line in discrimination file: $_\n");
+	    }
+	}
+	close REGEXP;
+	if ($count > 1) {
+	    $self->mylog('conf', 1, "Read $count discrimination regexp's from $file");
+	}
+	return $data;
+    }
+}
+
+sub read_discrimination_regexp($) {
+    my $self = shift;
+    $self->{sqlgrey}{discrimination_re} =
+	$self->read_discimination_regexp_file($discrimination_regexp_file);
+}
+
+# Check the attr fields delivered by postfix against the regexps.
+# If nothing matches, greylisting is skipped.
+sub discriminate_check($$) {
+    my ($self, $attr)  = @_;
+    my $hash  = $self->{sqlgrey}{discrimination_re};
+    my $match = 0;
+
+    keys %$hash; #This resets the hash. I have no idea why the iteration counter isnt reset upon leaving this function
+
+    #Loop loaded expressions
+    while ( my ($var,$data) = each(%$hash)) {
+      keys %$data; # reset hash
+
+      while ( my ($rulenr,$regex) = each(%$data)) {
+
+           if (!defined $attr->{$var}) {
+                 $self->mylog('conf', 3 , "Discrimination attrib '$var' unsupported by postfix. Skipping.");
+                 next;
+           }
+
+           if ($regex->{oper} eq '=~') { $match=1 if ($attr->{$var} =~ $regex->{regex}); } #if var equal to regex
+           if ($regex->{oper} eq '!~') { $match=1 if ($attr->{$var} !~ $regex->{regex}); } #if var not equal to regex
+           if ($regex->{oper} eq '==') { $match=1 if ($attr->{$var} eq $attr->{$regex->{regex}}); } #if var equal to variable
+           if ($regex->{oper} eq '!=') { $match=1 if ($attr->{$var} ne $attr->{$regex->{regex}}); } #if var not equal to variable
+
+           if ($match) {
+                   $self->mylog('conf', 3 , "Discrimination verdict: Greylist");
+                   $self->mylog('conf', 3 , "Discrimination check: $var $regex->{oper}~ $regex->{regex}");
+                   return $rulenr;
+           }
+      }
+    }
+    $self->mylog('conf', 2 , "Discrimination verdict: Dont Greylist ");
+    return 0; #default DONT greylist
+}
+
 #################################
 ## Regexps for smart algorithm ##
 #################################
 
-sub init_smart_regexps {
+sub init_smart_regexps($) {
     my $self = shift;
     $self->read_smtp_server_regexp();
     $self->read_dyn_fqdn_regexp();
 }
 
-sub read_a_regexp {
+sub read_a_regexp($$) {
     my $self = shift;
     my $file = shift;
 
@@ -1893,24 +2223,26 @@ sub read_a_regexp {
     }
 }
 
-sub read_smtp_server_regexp {
+sub read_smtp_server_regexp($) {
     my $self = shift;
     $self->{sqlgrey}{smtp_server_re} =
 	$self->read_a_regexp($smtp_server_regexp_file);
 }
 
-sub read_dyn_fqdn_regexp {
+sub read_dyn_fqdn_regexp($) {
     my $self = shift;
     $self->{sqlgrey}{dyn_fqdn_re} =
 	$self->read_a_regexp($dyn_fqdn_regexp_file);
 }
 
+
 ## client_identifier can be its IP-address or the class-C network
 ## we decide here
-sub client_identifier {
+sub client_identifier($$$) {
     my ($self, $addr, $fqdn) = @_;
     my $greymethod = $self->{sqlgrey}{greymethod};
     my $classc = class_c($addr);
+    my $is_ipv6 = is_ipv6($addr);
 
     if ($greymethod eq 'full') {
 	return $addr;
@@ -1924,6 +2256,11 @@ sub client_identifier {
 	    return $addr;
 	}
 
+        if ($is_ipv6) {
+            ## No other 'smart' checks are implemented for IPv6
+            return $classc;
+        }
+
 	# we need the last byte
 	my $last_part = get_last_addr_part($addr);
 	return $addr unless defined $last_part;
@@ -1931,9 +2268,7 @@ sub client_identifier {
         # We use Michel Bouissou's Regexp Horror Museum ;-)
         # Regexp from hell ;-) that sorts out known SMTP servers patterns
         if ($fqdn =~ $self->{sqlgrey}{smtp_server_re}) {
-	    $self->mylog('grey', 3,
-			 "identified SMTP server pattern: $fqdn, $addr: " .
-			 "using C-class ($classc).");
+	    $self->mylog('grey', 3, "identified SMTP server pattern: $fqdn, $addr: Using C-class ($classc).");
 	    return $classc;
         }
 
@@ -1941,22 +2276,17 @@ sub client_identifier {
         # pools patterns
         if ($fqdn =~
 	    /(^|[0-9.x_-])((cm?|gv|h|ip|host|m|p(a|c|u)?)?0*$last_part([._-]))/i) {
-	    $self->mylog('grey', 3,
-			 "identified dynamic pattern (last IP byte): " .
-			 "$fqdn, $addr: using full IP.");
+	    $self->mylog('grey', 3, "identified dynamic pattern (last IP byte): $fqdn, $addr: Using full IP.");
 	    return $addr;
         }
 
         if ($fqdn =~ $self->{sqlgrey}{dyn_fqdn_re}) {
-	    $self->mylog('grey', 3,
-			 "identified dynamic pattern (name): $fqdn, $addr: " .
-			 "using full IP.");
+	    $self->mylog('grey', 3, "identified dynamic pattern (name): $fqdn, $addr: Using full IP.");
 	    return $addr;
         }
 
 	# If not specifically identified as dynamic, return C-Class address
-        $self->mylog('grey', 3,
-		     "unknown pattern: $fqdn, $addr: using C-class ($classc).");
+        $self->mylog('grey', 3, "unknown pattern: $fqdn, $addr: using C-class ($classc).");
 	return $classc;
     }
 }
@@ -1966,10 +2296,11 @@ sub client_identifier {
 sub smtpd_access_policy($$)
 {
     my ($self, $attr) = @_;
+    my ($discrimination_rulenr) = 0;
 
     # prepare lookup
     my ($sender_name,$sender_domain,$deverp_sender_name) =
-	$self->normalize_sender($attr->{sender});
+	$self->normalize_sender($attr->{sender}, $attr->{recipient});
     my $recipient = $self->normalize_rcpt($attr->{recipient});
     my $addr = $attr->{client_address};
     my $fqdn = $attr->{client_name};
@@ -1983,9 +2314,15 @@ sub smtpd_access_policy($$)
 	$self->mylog('conf', 2, 'reloading static whitelists and smart regexps');
 	$self->update_static_whitelists();
 	$self->init_smart_regexps();
+	$self->init_discrimination();
 	$self->disconnectdb();
 	$self->connectdb();
     }
+
+    #Generate the rejection response (moved here to avoid redundancy)
+    my ($reject_text) =      $self->{sqlgrey}{reject_early} . ' Greylisted for ' .
+  	                     $self->{sqlgrey}{reconnect_delay} . ' minutes';
+
 
     # whitelist check
     if ($self->is_in_whitelists($sender_name, $sender_domain,
@@ -2007,19 +2344,58 @@ sub smtpd_access_policy($$)
 	$self->mylog('optin', 3, "greylisting active for $recipient");
     }
 
+    # discrimination checks
+    if ($dflt{discrimination}) { # if discrimination is enabled
+              # Check if sender data lets him skip greylisting
+              if ($discrimination_rulenr = $self->discriminate_check($attr)) { # note: Checks are run against the raw $attr fields.
+                      #We DO greylist
+                        # Add the rule.nr. (that is, linenumber in regexfile) of the rule that matched to response (helps the support department)
+                        $reject_text.= " ($discrimination_rulenr)" if ($dflt{discrimination_add_rulenr});
+              } else {
+                      #We DONT greylist
+                        $self->mylog('conf', 3, "Discrimination Passed check - not greylisting $addr");
+                        return $self->{sqlgrey}{prepend} ?
+                            $prepend . "not greylisting mail from $addr in $software"
+                                : 'dunno';
+              }
+
+    }
+
+
     # this is the identifier we use in AWLs
     my $cltid = $self->client_identifier($addr, $fqdn);
     # we need the value of now() in the database
     $self->update_dbnow();
-    # Is it time for cleanups ?
-    if (time() > $self->{sqlgrey}{next_maint}) {
-        $self->start_cleanup();
-        $self->{sqlgrey}{next_maint} = time() + $self->{sqlgrey}{db_cleandelay};
+
+    # If !defined last_dbclean, reload value from DB
+    if (!defined $self->{sqlgrey}{last_dbclean}) {
+        $self->{sqlgrey}{last_dbclean} = $self->getconfig('last_dbclean');
+
+        # if last_dbclean not found in db then write it.
+        if (!defined $self->{sqlgrey}{last_dbclean}) {
+	     # 0 will force a cleanup (unless db_cleandelay is really huge)
+             $self->setconfig('last_dbclean',0);
+             $self->{sqlgrey}{last_dbclean} = 0;
+        }
     }
+
+    # Is it time for cleanups ?
+    my $current_time = time();
+    if ($current_time > ($self->{sqlgrey}{last_dbclean} + $self->{sqlgrey}{db_cleandelay})) {
+            # updateconfig() returns affected_rows
+            if ($self->updateconfig('last_dbclean',$current_time,$self->{sqlgrey}{last_dbclean})) {
+                  # If affected_rows > 0, its my job to clean the db
+                  $self->{sqlgrey}{last_dbclean} = $current_time;
+                  $self->start_cleanup();
+            } else {
+                  #If affected_rows == 0, then someone already cleaned db
+                  $self->{sqlgrey}{last_dbclean} = undef; #make sqlgrey reload time from db on next pass
+            }
+    }
+
     # domain scale awl check
     if ($self->is_in_domain_awl($sender_domain, $cltid)) {
-	$self->mylog('grey', 2,
-		     "domain awl match: updating $cltid($addr), $sender_domain");
+	$self->mylog('grey', 2, "domain awl match: updating $cltid($addr), $sender_domain");
 	# update awl entry
 	$self->update_domain_awl($sender_domain, $cltid);
 	return $self->{sqlgrey}{prepend} ?
@@ -2042,17 +2418,15 @@ sub smtpd_access_policy($$)
 				   $cltid, $recipient)) {
         $self->mylog('grey', 2, "early reconnect: $cltid($addr), " .
 	 	      "$sender_name\@$sender_domain -> $recipient");
-	return ($self->{sqlgrey}{reject_early} . ' Greylisted for ' .
-		$self->{sqlgrey}{reconnect_delay} . ' minutes');
+	return $reject_text;
     }
     # is it a reconnection ?
     if ($self->in_connect($sender_name, $sender_domain, $cltid, $recipient)) {
 	my ($first_seen, $delay) =
 	    $self->get_reconnect_delay($sender_name, $sender_domain,
 				       $cltid, $recipient);
-        $self->mylog('grey', 2,
-		     "reconnect ok: $cltid($addr), " .
-		     "$sender_name\@$sender_domain -> $recipient ($delay)");
+        $self->mylog('grey', 2, "reconnect ok: $cltid($addr), $sender_name" . '@' . $sender_domain .
+		      " -> $recipient ($delay)");
 	# check if we have others from the same domain in the from_awl
 	# add 1 for our sample and compare to the aggregation level
 	if (
@@ -2065,28 +2439,37 @@ sub smtpd_access_policy($$)
 	    $self->move_domain_from_mail_to_domain_awl($sender_domain,
 						       $cltid);
 	    $self->mylog('grey', 2, "domain awl: $cltid, $sender_domain added");
+	    $self->delete_domain_from_connect($sender_domain, $cltid);
 	} else {
 	    # add to mail-level AWL
 	    $self->mylog('grey', 2, "from awl: $cltid, $deverp_sender_name" .
 			 '@' . "$sender_domain added");
 	    $self->put_in_from_awl($deverp_sender_name, $sender_domain,
 				   $cltid, $first_seen);
+	    $self->delete_mail_ip_from_connect($deverp_sender_name, $sender_domain,
+				   $cltid);
 	}
-	$self->delete_mail_ip_from_connect($sender_name, $sender_domain,
-					   $cltid);
 	return $self->{sqlgrey}{prepend} ?
 	    $prepend . "delayed $delay by $software" : 'dunno';
     }
+    # Throttling too many connections from same new host
+    if (defined $self->{sqlgrey}{connect_src_throttle} and $self->{sqlgrey}{connect_src_throttle} > 0) {
+        if ($self->count_src_connect($cltid) >= $self->{sqlgrey}{connect_src_throttle}
+	    and $self->count_src_domain_awl($cltid) < 1
+	    and $self->count_src_from_awl($cltid) < $self->{sqlgrey}{connect_src_throttle}) {
+	        $self->mylog('grey', 2, "throttling: $cltid($addr), $sender_name\@$sender_domain -> $recipient");
+		return ($self->{sqlgrey}{reject_first} . ' Throttling too many connections from new source - ' .
+		' Try again later.');
+	}
+    }
+
     # new connection
-    $self->mylog('grey', 2,
-		 "new: $cltid($addr), " .
-		 "$sender_name\@$sender_domain -> $recipient");
+    $self->mylog('grey', 2, "new: $cltid($addr), $sender_name\@$sender_domain -> $recipient");
     $self->put_in_connect($sender_name, $sender_domain, $cltid, $recipient);
-    return ($self->{sqlgrey}{reject_first} . ' Greylisted for ' .
-	    $self->{sqlgrey}{reconnect_delay} . ' minutes');
+    return $reject_text;
 }
 
-sub read_conffile
+sub read_conffile($)
 {
     my $optional_file = shift;
     if (defined $optional_file) {
@@ -2109,10 +2492,7 @@ sub read_conffile
         s/\s+$//;       # no trailing white
         next unless length;     # anything left ?
         my ($var, $value) = split(/\s*=\s*/, $_, 2);
-        $dflt{$var} = $value;
-	if (! defined $value) {
-	    $dflt{$var} = 1;
-	}
+        $dflt{$var} = $value || 1;
     }
     close CONF
 	or die "Couldn't close config file $config_file\n";
@@ -2172,6 +2552,18 @@ sub main()
     # Read the config file
     read_conffile($opt{configfile});
 
+    # Set some cluster specific stuff (move to an init_cluster() sub?)
+    no warnings 'uninitialized'; #Perl will spew warn's if running DBI only
+    if ($dflt{db_cluster} eq 'on') {
+            # if loglevel >= 4, enable debugging for DBCluster
+            $DBIx::DBCluster::DEBUG = ($dflt{'loglevel'}>3)?1:0;
+
+            # Ugly hack to make perl shut up about about "possible typo".
+            1 if ($DBIx::DBCluster::DEBUG);
+
+            $dflt{dont_db_clean} = (-e $dflt{conf_dir}."/dont_db_clean");
+    }
+
     # Are we on a killing spray ?
     if (defined $opt{kill}) {
 	my $pidfile = $dflt{pidfile};
@@ -2194,7 +2586,7 @@ sub main()
     if ($dflt{reject_first_attempt} eq 'delay') {
     	$dflt{reject_first_attempt} = 'defer_if_permit';
     } elsif ($dflt{reject_first_attempt} eq 'immed') {
-	$dflt{reject_first_attempt} = '450';
+	$dflt{reject_first_attempt} = $dflt{reject_code};
     } else {
     	pod2usage(1);
     }
@@ -2202,7 +2594,7 @@ sub main()
 	if ($dflt{reject_early_reconnect} eq 'delay') {
 	    $dflt{reject_early_reconnect} = 'defer_if_permit';
 	} elsif ($dflt{reject_early_reconnect} eq 'immed') {
-	    $dflt{reject_early_reconnect} = '450';
+	    $dflt{reject_early_reconnect} = $dflt{reject_code};
 	} else {
 	    pod2usage(1);
 	}
@@ -2227,6 +2619,7 @@ sub main()
 		                                          # process name
 		                                          $0 =~ m{.*/(.*)},
 	    syslog_logopt   => 'cons',
+	    Reuse           => 1,
         },
         sqlgrey => {
 	    # min time before reconnect (min)
@@ -2237,9 +2630,11 @@ sub main()
             awl_age         => $dflt{awl_age},
 	    # How many from match a domain/IP before a switch to domain AWL
 	    domain_level    => $dflt{group_domain_level},
-            next_maint      => time + $dflt{db_cleandelay},
-	    # Delay between table cleanups (in seconds)
-	    db_cleandelay   => $dflt{db_cleandelay},
+            last_dbclean    => undef, # triggers reload from db
+	    db_cleandelay   => $dflt{db_cleandelay}, # between table cleanups (seconds)
+
+            db_prepare_cache => $dflt{db_prepare_cache},
+
             db_type         => $dflt{db_type},
             db_name         => $dflt{db_name},
             db_host         => $dflt{db_host},
@@ -2254,6 +2649,7 @@ sub main()
 	    reject_first    => $dflt{reject_first_attempt},
 	    reject_early    => $dflt{reject_early_reconnect}
 	    			|| $dflt{reject_first_attempt},
+	    connect_src_throttle => $dflt{connect_src_throttle},
 	    admin_mail      => $dflt{admin_mail},
 	    warn_db         => 0, # mask SQL errors during db init
 	    mail_maxbucket  => 10, # max burst of mails
@@ -2261,6 +2657,8 @@ sub main()
 	    mail_bucket     => 5, # initial bucket
 	    last_mail       => time,
 	    log             => $dflt{log},
+
+#	    discrimination => $dflt{discrimination}
         },
     }, 'sqlgrey';
 
@@ -2269,6 +2667,7 @@ sub main()
 	$greymethod ne 'classc') {
 	pod2usage(1);
     }
+
     $server->run;
 }
 
@@ -2291,13 +2690,11 @@ sub pre_loop_hook() {
     }
 
     $SIG{USR1} = \&mark_reload_request;
-    $SIG{CHLD} = 'IGNORE';
 
     $self->initdb();
-    $self->mylog('other', 4, 'Initial cleanup');
-    $self->start_cleanup();
     $self->init_whitelists();
     $self->init_smart_regexps();
+    $self->init_discrimination();
 
     if (defined $self->{server}{setsid}) {
         # Detach from terminal

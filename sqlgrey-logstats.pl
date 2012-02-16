@@ -28,7 +28,7 @@ use Getopt::Long qw(:config posix_default no_ignore_case);
 use Time::Local;
 use Date::Calc;
 
-my $VERSION = "1.6.8";
+my $VERSION = "1.8.0-rc2";
 
 # supports IPv4 and IPv6
 my $ipregexp = '[\dabcdef\.:]+';
@@ -122,7 +122,8 @@ sub parse_args {
 
     GetOptions(\%opt, 'help|h', 'man', 'version', 'yesterday|y', 'today|t',
 	       'lasthour', 'last24h|d', 'lastweek|w', 'programname', 'debug',
-	       'top-domain=i', 'top-from=i', 'top-spam=i', 'print-delayed')
+	       'top-domain=i', 'top-from=i', 'top-spam=i', 'top-throttled=i',
+	       'print-delayed')
 	or pod2usage(1);
 
     if ($opt{debug}) {
@@ -166,6 +167,10 @@ sub parse_args {
     }
     if ($opt{'top-spam'}) {
 	$self->{top_spam} = $opt{'top-spam'};
+    }
+
+    if ($opt{'top-throttled'}) {
+	$self->{top_throttled} = $opt{'top-throttled'};
     }
 
     if ($opt{'print-delayed'}) {
@@ -235,6 +240,10 @@ sub parse_grey {
 	$self->{events}++;
 	$self->{new}{$1}++;
 	$self->{new_count}++;
+    } elsif ($event =~ /^throttling: ($ipregexp), (.*) -> (.*)$/i) {
+	$self->{events}++;
+	$self->{throttled}{$1}{$2}++;
+	$self->{throttled_count}++;
     } elsif ($event =~ /^early reconnect: ($ipregexp), (.*) -> (.*)$/i) {
 	$self->{events}++;
 	$self->{early}{$1}++;
@@ -265,6 +274,10 @@ sub parse_grey {
 	$self->{events}++;
 	$self->{new}{$1}++;
 	$self->{new_count}++;
+    } elsif ($event =~ /^throttling: ($ipregexp)\($ipregexp\), (.*) -> (.*)$/i) {
+	$self->{events}++;
+	$self->{throttled}{$1}{$2}++;
+	$self->{throttled_count}++;
     } elsif ($event =~ /^early reconnect: ($ipregexp)\($ipregexp\), (.*) -> (.*)$/i) {
 	$self->{events}++;
 	$self->{early}{$1}++;
@@ -417,6 +430,13 @@ sub print_delayed {
 			      "Delayed");
 }
 
+sub print_throttled {
+    my $self = shift;
+
+    $self->print_distribution($self->{throttled}, $self->{top_throttled},
+			      "Throttled");
+}
+
 sub print_stats {
     my $self = shift;
     print "##################\n" .
@@ -427,7 +447,8 @@ sub print_stats {
     print "Early         : " . $self->{early_count} . "\n";
     print "Delayed       : " . $self->{new_count} . "\n\n";
 
-    print "Probable SPAM : " . $self->{rejected_count} . "\n\n";
+    print "Probable SPAM : " . $self->{rejected_count} . "\n";
+    print "Throttled     : " . $self->{throttled_count} . "\n\n";
 
     print "###############################\n" .
 	"## Whitelist/AWL performance ##\n" .
@@ -450,6 +471,7 @@ sub print_stats {
     $self->print_domain_awl();
     $self->print_from_awl();
     $self->print_spam();
+    $self->print_throttled();
     $self->print_delayed();
 }
 
@@ -464,6 +486,7 @@ my $parser = bless {
     whitelisted => 0,
     rejected_count => 0,
     new_count => 0,
+    throttled_count => 0,
     early_count => 0,
     domain_awl_match_count => 0,
     from_awl_match_count => 0,
@@ -475,6 +498,7 @@ my $parser = bless {
     top_domain => -1,
     top_from => -1,
     top_spam => -1,
+    top_throttled => -1,
 }, 'sqlgrey_logstats';
 
 $parser->parse_args();
@@ -512,6 +536,7 @@ B<sqlgrey-logstats.pl> [I<options>...] < syslogfile
      --top-from         how many from AWL entries to print (default: all)
      --top-domain       how many domain AWL entries to print (default: all)
      --top-spam         how many SPAM sources to print (default: all)
+     --top-throttled    how many throttled sources to print (default: all)
      --print-delayed    print delayed sources (default: don't)
 
 =head1 DESCRIPTION
