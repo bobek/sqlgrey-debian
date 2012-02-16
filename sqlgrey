@@ -6,6 +6,7 @@
 # Copyright 2004-2007 (c) Lionel Bouton
 # Parts copyrighted 2005-2007 Dan Faerch
 # Parts copyrighted 2009 Michal Ludvig
+# Parts copyright 2012 Martin Matuska
 
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -38,7 +39,7 @@ use POSIX ':sys_wait_h';
 use vars qw(@ISA);
 @ISA = qw(Net::Server::Multiplex);
 
-my $VERSION = "1.8.0-rc2";
+my $VERSION = "1.8.0";
 my $software = 'SQLgrey-' . $VERSION;
 
 my $DB_VERSION = 3;
@@ -58,7 +59,6 @@ my %dflt;
 $dflt{loglevel}           = 2; # used for $dflt{log} entries in read_conffile()
 $dflt{user}               = 'sqlgrey';
 $dflt{group}              = 'sqlgrey';
-$dflt{inet}               = '2501';
 $dflt{pidfile}            = '/var/run/sqlgrey.pid';
 $dflt{conf_dir}           = '/etc/sqlgrey';
 $dflt{reconnect_delay}    = 5;            # 5 minutes
@@ -72,6 +72,7 @@ $dflt{db_type}            = 'Pg';
 $dflt{db_name}            = 'sqlgrey';
 $dflt{db_host}            = 'localhost';
 $dflt{db_port}            = 'default';
+$dflt{db_dsn}             = '';
 $dflt{db_user}            = 'sqlgrey';
 $dflt{db_pass}            = '';
 $dflt{db_prepare_cache}   = 0;
@@ -121,6 +122,10 @@ my $reload = 0; # non-zero signals a regexps/whitelists reload request
 
 my $ref_to_sqlgrey; # we need this global var to access sqlgrey functions
                     # in signal handlers
+
+# non-configurable defaults
+my $proto = 'tcp';
+my $port  = 'localhost:2501';
 
 sub mylog($$$$) {
     my ($self, $logtype, $loglevel, $message) = @_;
@@ -201,11 +206,11 @@ sub db_unavailable($) {
     if ($self->{sqlgrey}{db_available}) {
 	if (! defined $self->{sqlgrey}{dbh}) {
 	    $self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey lost database',
-							 'SQLgrey lost database connection to: ' . $self->cnctinfo());
+							 'SQLgrey lost database connection to: ' . $self->{sqlgrey}{db_dsn});
 	} else {
 	    $self->disconnectdb();
 	    $self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey database error',
-							 'SQLgrey encountered an SQL error and triggered a reconnection to: ' . $self->cnctinfo());
+							 'SQLgrey encountered an SQL error and triggered a reconnection to: ' . $self->{sqlgrey}{db_dsn});
 	}
 	$self->{sqlgrey}{db_available} = 0;
     }
@@ -216,7 +221,7 @@ sub db_available($) {
 
     if (! $self->{sqlgrey}{db_available}) {
 	$self->{sqlgrey}{warn_db} && $self->sendmail('SQLgrey recovered DB',
-			'SQLgrey established connection to: ' . $self->cnctinfo());
+			'SQLgrey established connection to: ' . $self->{sqlgrey}{db_dsn});
 	$self->{sqlgrey}{db_available} = 1;
     }
 }
@@ -771,28 +776,6 @@ sub upgrade2($) {
     $self->setconfig('version','3');
 }
 
-# Build a connect string for DBI
-sub cnctinfo($) {
-# Tested with PostgreSQL, MySQL and SQLite
-    my $self = shift;
-    my $dsn = 'DBI:' . $self->{sqlgrey}{db_type};
-    # only MySQL uses database=
-    if ($self->MySQL()) {
-        $dsn .= ':database=';
-    } else {
-        $dsn .= ':dbname=';
-    }
-    $dsn .= $self->{sqlgrey}{db_name};
-    # only SQLite doesn't require a hostname or port
-    if (! $self->SQLite()) {
-        $dsn .= ';host=' . $self->{sqlgrey}{db_host};
-        if ($self->{sqlgrey}{db_port} ne "default") {
-            $dsn .= ';port=' . $self->{sqlgrey}{db_port};
-        }
-    }
-    return $dsn;
-}
-
 # Global DB Init code
 sub initdb($) {
     my $self = shift;
@@ -815,7 +798,7 @@ sub connectdb($) {
     no warnings 'uninitialized'; #Perl will spew warn's if running DBI only
     if ($dflt{db_cluster} ne 'on') {
 
-    	$self->{sqlgrey}{dbh} = DBI->connect($self->cnctinfo(),
+    	$self->{sqlgrey}{dbh} = DBI->connect($self->{sqlgrey}{db_dsn},
 					     $self->{sqlgrey}{db_user},
 					     $self->{sqlgrey}{db_pass},
 					     $options)
@@ -841,7 +824,7 @@ sub connectdb($) {
     	$DBIx::DBCluster::WRITE_HOSTS_NEVER_READ=1;
 
     	$self->{sqlgrey}{dbh} =
-	    DBIx::DBCluster->connect($self->cnctinfo(),
+	    DBIx::DBCluster->connect($self->{sqlgrey}{db_dsn},
 				     $self->{sqlgrey}{db_user},
 				     $self->{sqlgrey}{db_pass},
 				     $options)
@@ -2542,7 +2525,7 @@ sub main()
     # options parsing
     my %opt = ();
     GetOptions(\%opt, 'help|h', 'man', 'version', 'configfile|f=s',
-	'daemonize|d', 'kill|k')
+	'daemonize|d', 'kill|k', 'pidfile|p=s')
 	or exit(1);
 
     if ($opt{help})    { pod2usage(1) }
@@ -2564,6 +2547,11 @@ sub main()
             $dflt{dont_db_clean} = (-e $dflt{conf_dir}."/dont_db_clean");
     }
 
+    # Check pidfile from command line arguments
+    if (defined $opt{pidfile}) {
+	$dflt{pidfile} = $opt{pidfile};
+    }
+
     # Are we on a killing spray ?
     if (defined $opt{kill}) {
 	my $pidfile = $dflt{pidfile};
@@ -2578,8 +2566,45 @@ sub main()
     }
 
     # bind only localhost if no host is specified
-    if(defined $dflt{inet} and $dflt{inet}=~/^\d+$/) {
-        $dflt{inet} = "localhost:$dflt{inet}";
+    if(defined $dflt{inet}) {
+	$proto = "tcp";
+	if ($dflt{inet}=~/^\d+$/) {
+	    $port = "localhost:$dflt{inet}";
+	} else {
+	    $port = $dflt{inet};
+	}
+    } elsif (defined $dflt{unix}) {
+	$proto = "unix";
+	$port = $dflt{unix} ."|unix";
+    }
+
+    # Make a new DSN or verify supplied DSN
+    if ($dflt{db_dsn} ne '') {
+	my @res = DBI->parse_dsn($dflt{db_dsn})
+            or die ('Error parsing db_dsn');
+	if ((defined $res[1]) && $res[1] ne '') {
+	    $dflt{db_type} = $res[1];
+	} else {
+	    die ('db_dsn is missing a database driver');
+	}
+    } else {
+        my $dsn;
+	$dsn = 'DBI:' . $dflt{db_type};
+	# only MySQL uses database=
+	if ($dflt{db_type} eq 'mysql') {
+	    $dsn .= ':database=';
+	} else {
+	    $dsn .= ':dbname=';
+	}
+	$dsn .= $dflt{db_name};
+	# only SQLite doesn't require a hostname or port
+	if ($dflt{db_type} ne 'SQLite') {
+	    $dsn .= ';host=' . $dflt{db_host};
+	    if ($dflt{db_port} ne "default") {
+	        $dsn .= ';port=' . $dflt{db_port};
+	    }
+	}
+	$dflt{db_dsn} = $dsn;
     }
 
     # set the actual reject code values
@@ -2604,8 +2629,8 @@ sub main()
     my $server = bless {
         server => {
             commandline     => [ $0, @ARGV_saved ],
-            port            => [ $dflt{inet} ],
-            proto           => 'tcp',
+            port            => [ $port ],
+            proto           => $proto,
             user            => $dflt{user},
 	    group           => $dflt{group},
             setsid          => $opt{daemonize} ? 1 : undef,
@@ -2639,6 +2664,7 @@ sub main()
             db_name         => $dflt{db_name},
             db_host         => $dflt{db_host},
             db_port         => $dflt{db_port},
+            db_dsn          => $dflt{db_dsn},
 	    db_user         => $dflt{db_user},
             db_pass         => $dflt{db_pass},
 	    db_available    => 1, # used to trigger e-mails
@@ -2674,6 +2700,16 @@ sub main()
 ####################################
 ## Net::Server::Multiplex methods ##
 ####################################
+
+sub post_bind_hook()
+{
+    my ($self) = @_;
+
+    # unix socket permissions should be 666
+    if($self->{server}{port}[0] =~ /^(.*)\|unix$/) {
+	chmod 0666, $1;
+    }
+}
 
 # Called before the first query comes.
 sub pre_loop_hook() {
@@ -2784,6 +2820,8 @@ B<sqlgrey> [I<options>...]
      --man                  display man page
      --version              output version information and exit
  -d, --daemonize            run in the background
+ -p, --pidfile=FILE         write process ID to FILE
+                            (overrides 'pidfile' in configfile)
  -k, --kill                 kill a running sqlgrey
                             (identified by 'pidfile' content)
  -f, --configfile=FILE      read config from FILE
