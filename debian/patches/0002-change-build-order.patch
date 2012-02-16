@@ -1,0 +1,22 @@
+From: Antonin Kral <a.kral@bobek.cz>
+Date: Thu, 16 Feb 2012 09:40:31 +0100
+Subject: =?UTF-8?q?change-build-order=0Aupdate=20version=20first,=20then=20b?=
+ =?UTF-8?q?uild=20manpages?=
+
+---
+ Makefile |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 5506982..043504c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -11,7 +11,7 @@ VERSION := $(shell cat VERSION)
+ default:
+ 	@echo "See INSTALL textfile";
+ 
+-all: manpage update-version
++all: update-version manpage
+ 
+ update-version:
+ 	cat sqlgrey | sed 's/^my $$VERSION = .*;/my $$VERSION = "$(VERSION)";/' > sqlgrey.new
