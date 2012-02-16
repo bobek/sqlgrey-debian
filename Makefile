@@ -36,7 +36,6 @@ use_dbi:
 
 manpage:
 	perldoc -u sqlgrey | pod2man -n sqlgrey > sqlgrey.1
-	perldoc -u sqlgrey-logstats.pl | pod2man -n sqlgrey-logstats.pl > sqlgrey-logstats.pl.1
 
 clean:
 	rm -f sqlgrey.1
@@ -60,7 +59,6 @@ install: all
 	$(INSTALL) -m 644 etc/smtp_server.regexp $(CONFDIR)
 	$(INSTALL) -m 644 etc/README $(CONFDIR)
 	$(INSTALL) -m 644 sqlgrey.1 $(MANDIR)
-	$(INSTALL) -m 644 sqlgrey-logstats.pl.1 $(MANDIR)
 
 rh-install: install
 	$(INSTALL) init/sqlgrey $(INITDIR)
