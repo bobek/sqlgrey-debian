@@ -1,0 +1,26 @@
+From: Antonin Kral <a.kral@bobek.cz>
+Date: Thu, 16 Feb 2012 10:11:40 +0100
+Subject: =?UTF-8?q?allow-false-in-config=0AAllow=20false=20to=20be=20passed=20?=
+ =?UTF-8?q?as=20value,=20patch=20by=20Joost=20van=20Baal-Ili=C4=87=20<joostv?=
+ =?UTF-8?q?b+debian-bugs-20120215-3@uvt.nl>?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ sqlgrey |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/sqlgrey b/sqlgrey
+index cac780f..b664a79 100755
+--- a/sqlgrey
++++ b/sqlgrey
+@@ -2475,7 +2475,7 @@ sub read_conffile($)
+         s/\s+$//;       # no trailing white
+         next unless length;     # anything left ?
+         my ($var, $value) = split(/\s*=\s*/, $_, 2);
+-        $dflt{$var} = $value || 1;
++        $dflt{$var} = $value // '';
+     }
+     close CONF
+ 	or die "Couldn't close config file $config_file\n";
