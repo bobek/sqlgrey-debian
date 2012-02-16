@@ -15,18 +15,19 @@ configure-stamp:
 
 	touch configure-stamp
 
+build: build-arch build-indep
+build-arch: build-stamp
+build-indep: build-stamp
 
-build: build-stamp
-
-build-stamp: configure-stamp
+build-stamp:
 	dh_testdir
+	$(MAKE) all
 	touch $@
 
 clean:
 	dh_testdir
 	dh_testroot
 	rm -f build-stamp configure-stamp
-	#rm -f $(CURDIR)/debian/*.1
 
 	$(MAKE) clean
 

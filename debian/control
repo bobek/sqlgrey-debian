@@ -3,7 +3,7 @@ Section: mail
 Priority: optional
 Maintainer: Antonin Kral <A.Kral@sh.cvut.cz>
 Build-Depends: debhelper (>= 5), perl-doc
-Standards-Version: 3.8.4
+Standards-Version: 3.9.2
 
 Package: sqlgrey
 Homepage: http://sqlgrey.sourceforge.net/
