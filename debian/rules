@@ -18,11 +18,8 @@ configure-stamp:
 
 build: build-stamp
 
-build-stamp: configure-stamp 
+build-stamp: configure-stamp
 	dh_testdir
-
-	$(MAKE) manpage && mv *.1 $(CURDIR)/debian/
-
 	touch $@
 
 clean:
@@ -33,12 +30,12 @@ clean:
 
 	$(MAKE) clean
 
-	dh_clean 
+	dh_clean
 
 install: build
 	dh_testdir
 	dh_testroot
-	dh_clean -k 
+	dh_clean -k
 	dh_installdirs
 
 	# Add here commands to install the package into debian/sqlgrey.
