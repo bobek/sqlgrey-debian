@@ -1,5 +1,5 @@
 From: Antonin Kral <a.kral@bobek.cz>
-Date: Thu, 16 Feb 2012 09:39:42 +0100
+Date: Thu, 16 Feb 2012 09:56:43 +0100
 Subject: =?UTF-8?q?add-logstats-manpage=0Aadd=20generation=20of=20logstats=20?=
  =?UTF-8?q?manpage?=
 
@@ -8,14 +8,14 @@ Subject: =?UTF-8?q?add-logstats-manpage=0Aadd=20generation=20of=20logstats=20?=
  1 files changed, 3 insertions(+), 1 deletions(-)
 
 diff --git a/Makefile b/Makefile
-index 043504c..8041ac2 100644
+index 043504c..a4b7eff 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -36,9 +36,10 @@ use_dbi:
  
  manpage:
  	perldoc -u sqlgrey | pod2man -n sqlgrey > sqlgrey.1
-+	perldoc -u sqlgrey-logstats | pod2man -n sqlgrey-logstats | sed 's/sqlgrey-logstats\.pl/sqlgrey-logstats/g' > sqlgrey-logstats.1
++	perldoc -u sqlgrey-logstats | pod2man -n sqlgrey-logstats | sed 's/sqlgrey.*-logstats\.pl/sqlgrey-logstats/g' > sqlgrey-logstats.1
  
  clean:
 -	rm -f sqlgrey.1
