@@ -1,5 +1,5 @@
 %define name sqlgrey
-%define ver  1.8.0-rc2
+%define ver  1.8.0
 %define rel  1
 
 Summary:   SQLgrey is a postfix grey-listing policy service.
@@ -66,6 +66,12 @@ if [ $1 = 0 ]; then
 fi
 
 %changelog
+* Mon Feb 13 2012 Martin Matuska <martin@matuska.org>
+ - 1.8.0 release
+ - Allow to specify complete DSN in configuration file
+ - Support listening on UNIX sockets
+ - Support pidfile command line argument
+
 * Mon Aug 17 2009 Michal Ludvig <mludvig@logix.net.nz>
  - 1.7.7 release getting ready
  - Reworked "smart" IPv6 address handling.
