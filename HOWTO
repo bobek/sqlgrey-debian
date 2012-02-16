@@ -1,0 +1,209 @@
+To begin with you need a sqlgrey user :
+- groupadd sqlgrey
+- adduser -g sqlgrey sqlgrey
+
+#####################
+## Database choice ##
+#####################
+
+SQLite : quick and dirty way. The database is integrated with sqlgrey.
+MySQL : lightweight DBRMS, quite fast but not as stable and standard
+	 compliant as PostgreSQL.
+PostgreSQL : full-fledge, very mature DBRMS.
+
+###########
+## SQLite 
+
+# Dependancies :
+you need the DBD::SQLite perl module (and libsqlite of course).
+
+# Howto :
+Setup /etc/sqlgrey/sqlgrey.conf with
+db_type = SQLite
+db_name = <whatever_you_want_as_name>
+
+# Note :
+sqlgrey will create the file storing database data in the working
+directory : launch sqlgrey in its home directory.
+
+##########
+## MySQL
+
+# Dependancies :
+you need the DBD::MySQL perl module and a working MySQL server.
+
+# Howto :
+Create a sqlgrey database and a mysql sqlgrey user:
+with mysql:
+> CREATE DATABASE sqlgrey;
+> GRANT ALL ON sqlgrey.* TO sqlgrey@localhost;
+
+Setup /etc/sqlgrey/sqlgrey.conf with
+db_type = mysql
+db_name = sqlgrey
+
+# Note :
+MySQL is really fast. I'd recommend it if you don't want to host critical
+databases with high access concurrency.
+
+###############
+## PostgreSQL
+
+# Dependancies :
+you need the DBD::Pg perl module and a working PostgreSQL server.
+
+# Howto :
+1/ Create a sqlgrey database and a PostgreSQL sqlgrey user:
+as postgres user (su - postgres):
+
+-bash-2.05b$ createuser sqlgrey
+Shall the new user be allowed to create databases? (y/n) y
+Shall the new user be allowed to create more new users? (y/n) n
+CREATE USER
+-bash-2.05b$
+
+You'll have to check your pg_hba.conf file if you're not sure about
+the access control configuration. For the next step, you need to be
+able to connect as sqlgrey.
+
+-bash-2.05b$ createdb -U sqlgrey sqlgrey
+CREATE DATABASE
+-bash-2.05b$
+
+Pay attention to the access controls : as Unix user sqlgrey, you must
+be able to connect to the sqlgrey database as sqlgrey PostgreSQL user...
+Look into pg_hba.conf and if needed set a password for the PostgreSQL
+sqlgrey user.
+sqlgrey will use the TCP/IP socket to connect, please make sure that
+"tcpip_socket = true"
+is in your 'postgresql.conf' file.
+
+This is my personnal recommendation, really robust, can scale up and
+down when properly configured.
+
+###########################
+## Postfix configuration ##
+###########################
+
+Start by adding check_policy_service after reject_unauth_destination in
+/etc/postfix/main.cf :
+
+ smtpd_recipient_restrictions =
+               ...
+               reject_unauth_destination
+               check_policy_service inet:127.0.0.1:2501
+
+This assumes sqlgrey will listen on the TCP 2501 port (default) and is
+on the same host.
+
+##################
+## Whitelisting ##
+##################
+
+Some MTAs don't play well with greylisting (often because they don't
+respect the RFCs). To work around this problem (that your users won't
+fail to report to you when it will happen):
+- don't disable sqlgrey logs (by default it will log what you need).
+- ask your user for the e-mail of the person that unsuccesfully tried
+ to send mail to her/him and when the unsuccessfull attempt occured.
+- in the meantime, if the transmission failure occured recently (less than
+max_connect_age in sqlgrey.conf, by default 24 hours) advise your user to
+contact the sender and politely ask her to re-send the message, there are
+good chances that the second attempt will get through (SQLgrey will probably
+find a match: the first attempt).
+- grep your mail logs for the address, you'll find a line like this
+<timestamp> <system> sqlgrey: grey: new: <id>(www.xxx.yyy.zzz): <sender_address> -> <your_user>
+by default, one day later you'll find this line:
+<timestamp> <system> sqlgrey: spam: <id>: <sender_address> -> <your_user> at <timestamp>
+
+What matters to you is the IP address (or the class C network) and
+the domain name it is associated with. If Postfix could find a reliable
+domain name (the reverse lookup must itself point to the IP address),
+you'll find it in one of the lines in your log before the first
+sqlgrey log line.
+
+If you can get a reliable domain name, put it in
+/etc/sqlgrey/clients_fqdn_whitelist.local
+do *not* touch the /etc/sqlgrey/clients_fqdn_whitelist file as it will
+be overwritten by a future sqlgrey installation or update_sqlgrey_whitelists
+The top of /etc/sqlgrey/clients_fqdn_whitelist explains the expected
+formats.
+You don't need to restart sqlgrey as it monitors the ".local" files
+and reload them as soon as they change or when they are created for
+the first time.
+
+If you can't get a reliable domain name, just put the IP address in
+the /etc/sqlgrey/clients_ip_whitelist.local file. If you need to,
+you can add a whole class C network by putting a line with only the
+three first bytes of the IP addresses.
+
+As it's quite important I repeat: only look for the installed
+clients_*_whitelist files for reference and put your own entries
+in the corresponding .local files.
+
+You are encouraged to subscribe to the sqlgrey-users mailing-list
+(see http://lists.sourceforge.net/lists/listinfo/sqlgrey-users)
+and submit the IP addresses and domain names you have to add to
+your .local files to make your users happy and the reason why
+you did so (see comments on why the existing systems are added).
+
+As of 1.4.3, SQLgrey's whitelists can be updated from a central repository
+with the update_sqlgrey_config script.
+update_sqlgrey_config outputs on STDOUT modified entries.
+Running it from cron is a great way to be warned of new whitelist entries
+or old entries being cleaned up.
+
+#####################
+# Warnings by email #
+#####################
+
+SQLgrey can send emails when it detects anomalies. You need to:
+- make sure the user SQLgrey runs as (should be sqlgrey) can send emails
+with the 'mail' command. use
+echo "test" | mail -s "SQLgrey test" <mailbox@a-domain.org>
+and check that the message made it through.
+- put the following line:
+admin_mail = <postmaster@yourdomain>
+in /etc/sqlgrey/sqlgrey.conf
+
+That's all. SQLgrey will make sure it doesn't flood your mailbox by
+rate-limiting the emails it sends.
+
+##################
+# OPTIN / OPTOUT #
+##################
+
+See README.OPTINOUT
+
+#################
+# RPM Packaging #
+#################
+
+Some of the steps required to install SQLgrey are covered by a RPM
+package built with the included spec file:
+- creates a sqlgrey user,
+- installs a /etc/init.d/sqlgrey SysV init file,
+- installs a /etc/sqlgrey/sqlgrey.conf config file
+- installs /etc/sqlgrey/clients_*_whitelist files
+
+What's left to you is the Postfix and Database setup.
+
+#################
+# Gentoo ebuild #
+#################
+
+The sourceforge site (http://sqlgrey.sourceforge.net/) points to the
+latest ebuild available. See http://linuxreviews.org/gentoo/ebuilds/
+for how to use it.
+
+If you use the ebuild and haven't done so yet, please fill a comment on
+http://bugs.gentoo.org/show_bug.cgi?id=71535
+
+#####################
+# Reloading SQLgrey #
+#####################
+
+If you change the sqlgrey.conf file you must restart SQLgrey to re-read it.
+If you change distributed whitelists (not local ones, they are automatically
+reloaded) or want to force a database reconnection you can force a reload by
+sending SIGUSR1 to the sqlgrey process.

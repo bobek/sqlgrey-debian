@@ -1,0 +1,52 @@
+#####################
+## Database schema ##
+#####################
+
+* After some time I've noticed entries like this one in my from_awl;
+-undef- | -undef- | aaa.bbb.ccc.ddd | xxxx-xx-xx xx:xx:xx.xxxxxx
+
+This is expected. Mail servers send you e-mail notices when they can't
+deliver your messages. When doing so, the Return-Path is empty.
+As at least MySQL doesn't support NULL in PRIMARY KEYs, SQLgrey creates
+these '-undef- | -undef-' entries to recognise these cases.
+
+* Why isn't there any PRIMARY KEY on the connect table ?
+* Why isn't there an INDEX on the column <xxx> ?
+
+I usually add a PRIMARY KEY to each table where there's a (KEY, VALUE)
+structure. It's rarely bad for performance and help detect bugs in
+the way the application layer handles the data.
+Unfortunately MySQL doesn't support PRIMARY KEYs on columns
+whose aggregate size is more than 500 bytes :
+ERROR 1071: Specified key was too long. Max key length is 500
+
+When adding support to PostgreSQL I could have added a PostgreSQL
+specific PRIMARY KEY. I chose not to because I was not convinced it
+was a good idea to introduce different database schema depending on
+the actual database system.
+
+There are two indexes on the connect table to speed up the queries:
+- one on first_seen
+- one on (src, sender_domain, sender_name)
+
+* Postfix starts refusing messages some time after installing SQLgrey,
+  what's going on?
+
+That was a common problem with 1.4.x and large installs. The connect table
+didn't have any index and needed full table scans for most connections.
+The database was overloaded and SQLgrey couldn't answer in time. If it
+happens with 1.5.x, you have an unordinary setup (insane trafic and a 386
+for the database for example). Look for heavy disk usage, try to tune
+your database server to allow it to load indexes in RAM and the table itself
+if needed.
+In any case, report your problem to sqlgrey-users@lists.sourceforge.net
+
+##########
+## Misc ##
+##########
+
+* Is /var/sqlgrey really necessary ? Wouldn't it be enough to start
+  sqlgrey in /tmp ?
+
+/var/sqlgrey is needed for SQLite users. MySQL and PostgreSQL don't need it.
+Unfortunately there's no way to guess which database will be used.

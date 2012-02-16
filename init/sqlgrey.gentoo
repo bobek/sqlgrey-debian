@@ -1,0 +1,31 @@
+#!/sbin/runscript
+# Copyright 1999-2004 Lionel Bouton
+# Distributed under the terms of the GNU General Public License v2
+
+depend() {
+	use logger
+	before mta
+	# pg_autovacuum waits for a fully started PostgreSQL
+	after pg_autovacuum postgresql mysql
+}
+
+start() {
+	ebegin "Starting SQLgrey"
+	# SQLite puts files in the working directory
+	cd ~sqlgrey
+	sqlgrey -d
+	eend
+}
+
+stop() {
+	ebegin "Shutting down SQLgrey"
+	sqlgrey -k
+	eend
+}
+
+# hack: seems Net::Server doesn't set REUSEADDR on socket?
+svc_restart() {
+	svc_stop
+	sleep 1
+	svc_start
+}
