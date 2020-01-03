@@ -47,32 +47,32 @@ case "$1" in
   start)
 	echo -n "Starting $DESC: $NAME"
 	start-stop-daemon --start --quiet --pidfile $PIDFILE \
-                --chdir $SQLGREY_HOME \
+		--chdir $SQLGREY_HOME \
 		--exec $DAEMON -- $SQLGREY_OPTS
 	echo "."
 	;;
   stop)
 	echo -n "Stopping $DESC: $NAME"
 	start-stop-daemon --stop --quiet \
-			--user sqlgrey --pidfile $PIDFILE --oknodo
+		--user sqlgrey --pidfile $PIDFILE --oknodo
         rm -f $PIDFILE
 	echo "."
 	;;
   reload|force-reload)
 	echo -n "Reloading $DESC configuration..."
 	start-stop-daemon --stop --quiet --signal 1 \
-			--user sqlgrey --pidfile $PIDFILE --oknodo
+		--user sqlgrey --pidfile $PIDFILE --oknodo
 	echo "done."
         ;;
   restart)
 	echo -n "Restarting $DESC: $NAME"
 	start-stop-daemon --stop --quiet \
 			--user sqlgrey --pidfile $PIDFILE --oknodo
-        rm -f $PIDFILE
+	rm -f $PIDFILE
 	sleep 1
 	start-stop-daemon --start --quiet --pidfile $PIDFILE \
-                --chdir $SQLGREY_HOME \
-                --exec $DAEMON -- $SQLGREY_OPTS
+		--chdir $SQLGREY_HOME \
+		--exec $DAEMON -- $SQLGREY_OPTS
 	echo "."
 	;;
   *)
