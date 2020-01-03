@@ -51,6 +51,9 @@ case "$1" in
 		--exec $DAEMON -- $SQLGREY_OPTS
 	echo "."
 	;;
+  status)
+	status_of_proc $DAEMON sqlgrey
+	;;
   stop)
 	echo -n "Stopping $DESC: $NAME"
 	start-stop-daemon --stop --quiet \
@@ -76,7 +79,7 @@ case "$1" in
 	echo "."
 	;;
   *)
-	echo "Usage: $SCRIPTNAME {start|stop|restart|reload|force-reload}" >&2
+	echo "Usage: $SCRIPTNAME {start|stop|status|restart|reload|force-reload}" >&2
 	exit 1
 	;;
 esac
