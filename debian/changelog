@@ -1,3 +1,11 @@
+sqlgrey (1:1.8.0-3) unstable; urgency=medium
+
+  * [9181e48] Add sensible logcheck rules (Closes: #806648)
+  * [d11e4f5] Make whitespaces more consistent in the init script
+  * [f146bc0] Add status action for the init script (Closes: #693747)
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Fri, 03 Jan 2020 21:10:50 +0100
+
 sqlgrey (1:1.8.0-2) unstable; urgency=medium
 
   * [7c08b04] Pass correct user to start-stop-daemon (Closes: #947911)
