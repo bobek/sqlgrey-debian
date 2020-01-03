@@ -48,18 +48,21 @@ case "$1" in
 	;;
   stop)
 	echo -n "Stopping $DESC: $NAME"
-	start-stop-daemon --stop --quiet --pidfile $PIDFILE --oknodo
+	start-stop-daemon --stop --quiet \
+			--user sqlgrey --pidfile $PIDFILE --oknodo
         rm -f $PIDFILE
 	echo "."
 	;;
   reload|force-reload)
 	echo -n "Reloading $DESC configuration..."
-	start-stop-daemon --stop --signal 1 --quiet --pidfile $PIDFILE
+	start-stop-daemon --stop --quiet --signal 1 \
+			--user sqlgrey --pidfile $PIDFILE --oknodo
 	echo "done."
         ;;
   restart)
 	echo -n "Restarting $DESC: $NAME"
-	start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE
+	start-stop-daemon --stop --quiet \
+			--user sqlgrey --pidfile $PIDFILE --oknodo
         rm -f $PIDFILE
 	sleep 1
 	start-stop-daemon --start --quiet --pidfile $PIDFILE \
