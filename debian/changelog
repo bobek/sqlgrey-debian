@@ -1,7 +1,14 @@
+sqlgrey (1:1.8.0-2) unstable; urgency=medium
+
+  * [7c08b04] Pass correct user to start-stop-daemon (Closes: #947911)
+  * Updating package infrastructure
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Fri, 03 Jan 2020 20:08:33 +0100
+
 sqlgrey (1:1.8.0-1) unstable; urgency=low
 
-  * [8e942a4] Imported Upstream version 1.8.0 Allow
-  * false as config value, patch by Joost van Baal-Ilić
+  * [8e942a4] Imported Upstream version 1.8.0
+  * Allow false as config value, patch by Joost van Baal-Ilić
     <joostvb+debian-bugs-20120215-3@uvt.nl> (Closes: #659987)
 
  -- Antonin Kral <A.Kral@sh.cvut.cz>  Thu, 16 Feb 2012 10:12:11 +0100

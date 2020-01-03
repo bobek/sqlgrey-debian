@@ -27,9 +27,11 @@ case "$1" in
 
       if [ -d $DBDIR ]; then
         rmdir $DBDIR || true
-        dpkg-statoverride --remove $DBDIR || true
+        if dpkg-statoverride --list $DBDIR >/dev/null 2>&1; then
+          dpkg-statoverride --remove $DBDIR
+        fi
       fi
-      
+
       if [ -d $CONFDIR ]; then
 	rm -f $CONFDIR/*~ \
 	      $CONFDIR/clients_fqdn_whitelist \

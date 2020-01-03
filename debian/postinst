@@ -35,8 +35,10 @@ case "$1" in
 
       if [ ! -e "$DBDIR" ]; then
         mkdir -p "$DBDIR"
-        dpkg-statoverride --update --add \
-          sqlgrey sqlgrey 0700 "$DBDIR"
+        if ! dpkg-statoverride --list $DBDIR >/dev/null 2>&1; then
+          dpkg-statoverride --update --add \
+            sqlgrey sqlgrey 0700 "$DBDIR"
+        fi
       fi
 
     ;;

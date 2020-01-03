@@ -30,6 +30,11 @@ SCRIPTNAME=/etc/init.d/$NAME
 # Gracefully exit if the package has been removed.
 test -x $DAEMON || exit 0
 
+# Define LSB log_* functions.
+# Depend on lsb-base (>= 3.2-14) to ensure that this file is present
+# and status_of_proc is working.
+. /lib/lsb/init-functions
+
 # Read config file if it is present.
 if [ -r /etc/default/$NAME ]
 then
