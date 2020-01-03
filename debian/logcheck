@@ -1,0 +1,12 @@
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: conf: reloading static whitelists and smart regexps$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: domain awl match: updating [.:[:xdigit:]]+\([.:[:xdigit:]]+\), [._[:alnum:]-]+$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: domain awl: [.:[:xdigit:]]+, $sender_domain added$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: early reconnect: [.:[:xdigit:]]+\([.:[:xdigit:]]+\), [[:graph:]]+@[._[:alnum:]-]+ -> [[:graph:]]+@[._[:alnum:]-]+$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: from awl match: updating [.:[:xdigit:]]+\([.:[:xdigit:]]+\), [[:graph:]]+@[._[:alnum:]-]+\([[:graph:]]+@[._[:alnum:]-]+\)$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: from awl: [.:[:xdigit:]]+, [[:graph:]]+@[._[:alnum:]-]+ added$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: new: [.:[:xdigit:]]+\([.:[:xdigit:]]+\), [[:graph:]]+@[._[:alnum:]-]+ -> [[:graph:]]+@[._[:alnum:]-]+$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: reconnect ok: [.:[:xdigit:]]+\([.:[:xdigit:]]+\), [[:graph:]]+@[._[:alnum:]-]+ -> [[:graph:]]+@[._[:alnum:]-]+ \([0-9:.]+\)$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: grey: throttling: [.:[:xdigit:]]+\($addr\), [[:graph:]]+@[._[:alnum:]-]+ -> [[:graph:]]+@[._[:alnum:]-]+$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: perf: spent [0-9]+s cleaning: from_awl \([0-9]+\) domain_awl \([0-9]+\) connect \([0-9]+\)$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: spam: [.:[:xdigit:]]+: [[:graph:]]+@[._[:alnum:]-]+ -> [[:graph:]]+@[._[:alnum:]-]+ at [0-9-]{10} [0-9:]{8}\.[0-9]+$
+^\w{3} [ :0-9]{11} [._[:alnum:]-]+ sqlgrey: whitelist: [[:graph:]]+@[._[:alnum:]-]+, [.:[:xdigit:]]+\([._[:alnum:]-]+\) -> [[:graph:]]+@[._[:alnum:]-]+$
