@@ -1,3 +1,10 @@
+sqlgrey (1:1.8.0-4) unstable; urgency=medium
+
+  * Bumping version to allow for source only upload. (Kudos to Andrian Bunk
+    for a ping)
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Sun, 16 Feb 2020 13:57:18 +0100
+
 sqlgrey (1:1.8.0-3) unstable; urgency=medium
 
   * [9181e48] Add sensible logcheck rules (Closes: #806648)
