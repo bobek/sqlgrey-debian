@@ -3,7 +3,7 @@ Section: mail
 Priority: optional
 Maintainer: Antonin Kral <A.Kral@sh.cvut.cz>
 Build-Depends: debhelper (>= 5), perl-doc, debhelper-compat (= 12), dh-exec
-Standards-Version: 4.5.0
+Standards-Version: 4.6.2
 Vcs-Git: https://github.com/bobek/sqlgrey-debian.git
 Vcs-Browser: https://github.com/bobek/sqlgrey-debian
 Homepage: http://sqlgrey.sourceforge.net/
