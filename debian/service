@@ -1,0 +1,13 @@
+[Unit]
+Description=Postfix Greylisting Policy Server
+After=local-fs.target network.target
+
+[Service]
+User=sqlgrey
+Group=sqlgrey
+Type=simple
+WorkingDirectory=/var/lib/sqlgrey
+ExecStart=/usr/sbin/sqlgrey
+
+[Install]
+WantedBy=multi-user.target
