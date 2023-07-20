@@ -1,2 +1,1 @@
-#!/usr/bin/dh-exec
-debian/logcheck => /etc/logcheck/ignore.d.server/sqlgrey
+debian/logcheck etc/logcheck/ignore.d.server/sqlgrey
