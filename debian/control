@@ -11,7 +11,7 @@ Homepage: http://sqlgrey.sourceforge.net/
 Package: sqlgrey
 Architecture: all
 Pre-Depends: ${misc:Pre-Depends}
-Depends: ${perl:Depends}, ${misc:Depends}, adduser, perl, libnet-server-perl, libdate-calc-perl, libdbd-pg-perl | libdbd-mysql-perl | libdbd-sqlite3-perl, lsb-base
+Depends: ${perl:Depends}, ${misc:Depends}, adduser, perl, libnet-server-perl, libdate-calc-perl, libdbd-pg-perl | libdbd-mysql-perl | libdbd-sqlite3-perl
 Recommends: postfix, libdbd-pg-perl
 Description: Postfix Greylisting Policy Server
  A policy server for Postfix implementing greylisting.
