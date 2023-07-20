@@ -1,12 +1,19 @@
-sqlgrey (1:1.8.0-5) UNRELEASED; urgency=medium
+sqlgrey (1:1.8.0-5) unstable; urgency=medium
 
+  [ Debian Janitor ]
   * Trim trailing whitespace.
   * Use secure URI in debian/watch.
   * Set upstream metadata fields: Repository.
   * Use secure URI in Vcs control header Vcs-Git.
   * Update standards version to 4.5.0, no changes needed.
 
- -- Debian Janitor <janitor@jelmer.uk>  Tue, 05 May 2020 02:48:35 +0000
+  [ Antonin Kral ]
+  * [9937345] Drop `lsb-base`
+  * [c03d4bd] Switch debian/rules to dh
+  * [2d58689] Add systemd service (Closes: #1039381)
+  * [0c2ca1e] Bump standards version
+
+ -- Antonin Kral <A.Kral@sh.cvut.cz>  Thu, 20 Jul 2023 18:39:51 +0200
 
 sqlgrey (1:1.8.0-4) unstable; urgency=medium
 
